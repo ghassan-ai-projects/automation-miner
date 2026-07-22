@@ -74,6 +74,7 @@ Tools: `mine_domain`, `list_runs`, `list_domains`, `get_opportunity`,
 
 ```
 <workspace>/                       # ./mining-workspace or $MINER_WORKSPACE
+├── .am-counter                    # monotonic AM-ID allocation watermark
 ├── registry.json                  # machine index (rebuilt by reindex)
 ├── runs/
 │   └── YYYY-MM-DD_<domain-slug>/
@@ -82,7 +83,10 @@ Tools: `mine_domain`, `list_runs`, `list_domains`, `get_opportunity`,
 │       ├── context.json           # normalized context packet
 │       ├── domain_map.json
 │       ├── layers/<layer>.json    # 5 layer analyses
-│       ├── drafts/AM-XXX.v<n>.json# every draft + critique iteration
+│       ├── drafts/<layer>.batch.json # raw per-layer draft batches
+│       ├── drafts/AM-XXX.v<n>.json   # every draft + critique iteration
+│       ├── scores.json             # validated scores before portfolio policy
+│       ├── ranked.json             # ranked, constraint-filtered portfolio
 │       ├── opportunities.json     # final scored portfolio
 │       └── report.md              # ranked table + strategic filters
 └── opps/
@@ -120,6 +124,11 @@ custom OpenAI-compatible endpoints work too. Env overrides: `MINER_PROVIDER`
 (all roles), `MINER_MODEL` (all roles), `MINER_MODEL_<ROLE>` (one role).
 `--dry-run` forces the deterministic mock provider for everything.
 
+Constraint policy is enforced again in code after model scoring. Low-budget and
+no-code runs require Ease >= 4; compliance-heavy runs exclude unresolved high-risk
+items; infrastructure maturity limits eligible layers; agent limits cap topology;
+urgent/tight-timeline runs publish the top three by Ease then ICE.
+
 ## Development
 
 ```bash
@@ -131,3 +140,7 @@ make dry-run   # end-to-end smoke run into /tmp/am-smoke
 
 Domain logic reference lives in `docs/spec/` (4 phases, 5 layers, ICE scoring,
 constraint rules); the implementation contract is `docs/DESIGN.md`.
+
+Runs currently restart from their original input after a failure. Stage artifacts
+are durable and sufficient for diagnosis, but a public resume command and checkpoint
+compatibility policy are not yet implemented.

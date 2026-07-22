@@ -13,6 +13,7 @@ from automation_miner.schemas import (
     Layer,
     Level,
     OpportunityDraft,
+    Opportunity,
 )
 
 
@@ -92,3 +93,23 @@ def test_draft_requires_layer(sample_draft: OpportunityDraft) -> None:
     data["layer"] = "bogus"
     with pytest.raises(ValidationError):
         OpportunityDraft.model_validate(data)
+
+
+def test_schemas_reject_extra_fields() -> None:
+    with pytest.raises(ValidationError, match="extra_forbidden"):
+        ICEScore(impact=3, confidence=3, ease=3, rationale="r", surprise=True)
+
+
+def test_opportunity_rejects_inconsistent_ice(sample_draft: OpportunityDraft) -> None:
+    score = ICEScore(impact=3, confidence=3, ease=3, rationale="r")
+    with pytest.raises(ValidationError, match="ice must equal"):
+        Opportunity(
+            am_id="AM-001",
+            domain="D",
+            domain_slug="d",
+            draft=sample_draft,
+            score=score,
+            ice=99,
+            critique_overall=8,
+            iterations=1,
+        )

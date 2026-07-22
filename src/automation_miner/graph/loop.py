@@ -27,19 +27,23 @@ def run_critique_loop(
     draft: OpportunityDraft,
     other_titles: list[str],
     max_iterations: int,
+    evidence: str = "",
+    constraints: str = "",
 ) -> tuple[OpportunityDraft, list[dict[str, Any]]]:
     """Run critique ⇄ refine until pass or max_iterations critique rounds.
 
     Returns the final draft and the full iteration history
     (one entry per critique round: version, draft, critique, overall).
     """
+    if max_iterations < 1:
+        raise ValueError("max_iterations must be at least 1")
     current = draft
     history: list[dict[str, Any]] = []
     for round_no in range(1, max_iterations + 1):
         critique = model.call_json(
             "critic",
             CRITIC_SYSTEM,
-            critique_prompt(current.model_dump_json(), other_titles),
+            critique_prompt(current.model_dump_json(), other_titles, evidence),
             Critique,
         )
         history.append(
@@ -56,7 +60,12 @@ def run_critique_loop(
         current = model.call_json(
             "refiner",
             REFINER_SYSTEM,
-            refine_prompt(current.model_dump_json(), critique.model_dump_json()),
+            refine_prompt(
+                current.model_dump_json(),
+                critique.model_dump_json(),
+                evidence,
+                constraints,
+            ),
             OpportunityDraft,
         )
         current = current.model_copy(update={"layer": draft.layer})

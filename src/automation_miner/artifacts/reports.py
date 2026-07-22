@@ -14,6 +14,10 @@ from automation_miner.schemas import (
 from automation_miner.scoring import strategic_filters
 
 
+def _cell(value: object) -> str:
+    return str(value).replace("|", "\\|").replace("\r\n", "<br>").replace("\n", "<br>")
+
+
 def _filter_lists(ranked: list[Opportunity]) -> dict[str, list[Opportunity]]:
     out: dict[str, list[Opportunity]] = {"low_hanging": [], "high_value": [], "vision": []}
     for opp in ranked:
@@ -37,7 +41,7 @@ def render_report(ranked: list[Opportunity]) -> str:
     for i, opp in enumerate(ranked, 1):
         d = opp.draft
         lines.append(
-            f"| {i} | {opp.am_id} | {d.title} | {opp.score.impact} | "
+            f"| {i} | {opp.am_id} | {_cell(d.title)} | {opp.score.impact} | "
             f"{opp.score.confidence} | {opp.score.ease} | {opp.ice} | "
             f"{d.layer.value} | {d.effort.value.title()} | {d.risk_level.value.title()} |"
         )
@@ -98,13 +102,16 @@ def render_run_md(
         "| Dimension | Analysis |",
         "|-----------|----------|",
     ]
-    lines += [f"| {k} | {v} |" for k, v in dm_rows]
+    lines += [f"| {_cell(k)} | {_cell(v)} |" for k, v in dm_rows]
     lines += [
         "",
         "### Stakeholder-Process Map",
         "",
         "```",
-        "\n".join(f"{s} -> primary processes" for s in domain_map.stakeholders),
+        "\n".join(
+            f"{row.stakeholder} -> {' -> '.join(row.processes)}"
+            for row in domain_map.stakeholder_processes
+        ),
         "```",
         "",
         "### Five-Layer Analysis",
@@ -116,7 +123,7 @@ def render_run_md(
     for layer in LAYER_ORDER:
         a = by_layer.get(layer)
         if a:
-            findings = "; ".join(a.findings[:2])
+            findings = _cell("; ".join(a.findings[:2]))
             lines.append(f"| {LAYER_TITLES[layer]} | {findings} | {a.pain_level.value.upper()[0]} |")
 
     lines += ["", "---", "", "## Phase 2: Run Log — Layer Agent Outputs", ""]
@@ -147,7 +154,7 @@ def render_run_md(
     for i, opp in enumerate(ranked, 1):
         d = opp.draft
         lines.append(
-            f"| {i} | {opp.am_id} | {d.title} | {opp.score.impact} | "
+            f"| {i} | {opp.am_id} | {_cell(d.title)} | {opp.score.impact} | "
             f"{opp.score.confidence} | {opp.score.ease} | {opp.ice} | "
             f"{d.effort.value.title()} | {d.risk_level.value.title()} |"
         )

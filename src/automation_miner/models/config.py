@@ -74,16 +74,25 @@ class MinerConfig:
         provider = entry["provider"]
         if provider == "mock":
             return RoleRoute(provider="mock", model=entry.get("model", "mock"))
+        model = str(entry.get("model", "")).strip()
+        if not model:
+            raise ValueError(f"Role {role!r} does not define a model.")
         pconf = self.providers.get(provider)
         if pconf is None:
             raise ValueError(
                 f"Provider {provider!r} (role {role!r}) is not defined in [providers]."
             )
+        base_url = str(pconf.get("base_url", "")).strip()
+        api_key_env = str(pconf.get("api_key_env", "")).strip()
+        if not base_url:
+            raise ValueError(f"Provider {provider!r} does not define base_url.")
+        if not api_key_env:
+            raise ValueError(f"Provider {provider!r} does not define api_key_env.")
         return RoleRoute(
             provider=provider,
-            model=entry["model"],
-            base_url=str(pconf.get("base_url", "")),
-            api_key_env=str(pconf.get("api_key_env", "")),
+            model=model,
+            base_url=base_url,
+            api_key_env=api_key_env,
         )
 
     def routing_table(self, dry_run: bool = False) -> dict[str, str]:
@@ -114,6 +123,9 @@ def load_config(workspace: Path | None = None, profile: str = "default") -> Mine
     data = tomllib.loads(path.read_text(encoding="utf-8"))
     providers = {**DEFAULT_CONFIG["providers"], **data.get("providers", {})}
     roles = {**DEFAULT_CONFIG["roles"], **data.get("roles", {})}
-    profile_roles = data.get("profiles", {}).get(profile, {}).get("roles", {})
+    profiles = data.get("profiles", {})
+    if profile != "default" and profile not in profiles:
+        raise ValueError(f"Profile {profile!r} is not defined in {path}.")
+    profile_roles = profiles.get(profile, {}).get("roles", {})
     roles.update(profile_roles)
     return MinerConfig(providers=providers, roles=roles, source=str(path))

@@ -106,3 +106,47 @@ def test_mine_domain_requires_input(workspace: Path) -> None:
     resp = dispatch("mine_domain", {"input": ""}, workspace)
     assert not resp.success
     assert resp.error.code == "validation_error"
+
+
+def test_mine_domain_validates_iterations_and_paths(workspace: Path) -> None:
+    malformed = dispatch(
+        "mine_domain", {"input": "domain", "max_iterations": "many"}, workspace
+    )
+    assert not malformed.success
+    assert malformed.error.code == "validation_error"
+
+    zero = dispatch(
+        "mine_domain",
+        {"input": "domain", "max_iterations": 0, "dry_run": True},
+        workspace,
+    )
+    assert not zero.success
+    assert zero.error.code == "validation_error"
+
+    missing = dispatch(
+        "mine_domain",
+        {"input": str(workspace / "missing.md"), "input_type": "file", "dry_run": True},
+        workspace,
+    )
+    assert not missing.success
+    assert missing.error.code == "validation_error"
+
+    wrong_bool = dispatch(
+        "mine_domain", {"input": "domain", "dry_run": "yes"}, workspace
+    )
+    assert not wrong_bool.success
+    assert wrong_bool.error.code == "validation_error"
+
+
+def test_lookup_tools_reject_pattern_and_traversal_input(workspace: Path) -> None:
+    opportunity = dispatch("get_opportunity", {"am_id": "*"}, workspace)
+    assert not opportunity.success
+    assert opportunity.error.code == "validation_error"
+
+    report = dispatch("get_run_report", {"run_id": "../../outside"}, workspace)
+    assert not report.success
+    assert report.error.code == "validation_error"
+
+    query = dispatch("query_registry", {"min_ice": 126}, workspace)
+    assert not query.success
+    assert query.error.code == "validation_error"

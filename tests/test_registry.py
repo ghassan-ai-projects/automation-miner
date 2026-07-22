@@ -45,6 +45,8 @@ def test_parse_frontmatter() -> None:
 
 
 def test_build_registry_compact_keys_and_indices(tmp_path: Path) -> None:
+    (tmp_path / "runs" / "2026-07-20_alpha-domain").mkdir(parents=True)
+    (tmp_path / "runs" / "2026-07-21_alpha-domain").mkdir()
     _write_brief(tmp_path, "alpha-domain", "AM-001", "First", "document", 85)
     _write_brief(tmp_path, "alpha-domain", "AM-002", "Second", "decision", 64)
     _write_brief(tmp_path, "beta-domain", "AM-003", "Third", "monitoring", 30, status="live")
@@ -68,6 +70,7 @@ def test_build_registry_compact_keys_and_indices(tmp_path: Path) -> None:
 
     stats = registry["stats"]
     assert stats["runs"] == 2
+    assert stats["domains"] == 2
     assert stats["opps"] == 3
     assert stats["top_ice"] == 85
     assert stats["top_id"] == "AM-001"
@@ -89,3 +92,37 @@ def test_empty_workspace(tmp_path: Path) -> None:
     registry = build_registry(tmp_path)
     assert registry["stats"]["opps"] == 0
     assert registry["entries"] == []
+
+
+def test_statuses_follow_schema_and_migrate_legacy_values(tmp_path: Path) -> None:
+    _write_brief(
+        tmp_path, "alpha", "AM-001", "Legacy", "document", 40, status="validating"
+    )
+    _write_brief(
+        tmp_path, "alpha", "AM-002", "Current", "document", 40, status="implementing"
+    )
+    registry = build_registry(tmp_path)
+    assert registry["by_status"]["evaluating"] == ["AM-001"]
+    assert registry["by_status"]["implementing"] == ["AM-002"]
+    assert "validating" not in registry["by_status"]
+
+
+def test_registry_skips_mismatched_and_duplicate_ids_with_warnings(tmp_path: Path) -> None:
+    _write_brief(tmp_path, "alpha", "AM-001", "First", "document", 40)
+    duplicate = tmp_path / "opps" / "beta"
+    duplicate.mkdir(parents=True)
+    (duplicate / "AM-001-duplicate.md").write_text(
+        BRIEF.format(
+            am_id="AM-001", title="Duplicate", layer="document", ice=40, status="identified"
+        ),
+        encoding="utf-8",
+    )
+    (duplicate / "AM-002-mismatch.md").write_text(
+        BRIEF.format(
+            am_id="AM-999", title="Mismatch", layer="document", ice=40, status="identified"
+        ),
+        encoding="utf-8",
+    )
+    registry = build_registry(tmp_path)
+    assert [entry["i"] for entry in registry["entries"]] == ["AM-001"]
+    assert len(registry["warnings"]) == 2

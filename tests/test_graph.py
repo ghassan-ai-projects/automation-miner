@@ -8,6 +8,7 @@ from pathlib import Path
 from automation_miner.artifacts.workspace import read_json
 from automation_miner.graph.build import run_mine
 from automation_miner.schemas import LAYER_ORDER
+import pytest
 
 
 def test_full_run_dry(workspace: Path) -> None:
@@ -31,6 +32,9 @@ def test_full_run_dry(workspace: Path) -> None:
         assert (run_dir / rel).is_file(), f"missing {rel}"
     for layer in LAYER_ORDER:
         assert (run_dir / "layers" / f"{layer.value}.json").is_file()
+        assert (run_dir / "drafts" / f"{layer.value}.batch.json").is_file()
+    assert (run_dir / "scores.json").is_file()
+    assert (run_dir / "ranked.json").is_file()
 
     # Five mock opportunities, one per layer, sequential AM ids
     opps = result["opportunities"]
@@ -64,6 +68,10 @@ def test_full_run_dry(workspace: Path) -> None:
     run_md = (run_dir / "run.md").read_text(encoding="utf-8")
     assert "# Automation Mining Run" in run_md
     assert "## Phase 1: Domain Map" in run_md
+    assert "Operations team -> Intake -> Validation" in run_md
+
+    domain_map = read_json(run_dir / "domain_map.json")
+    assert domain_map["stakeholder_processes"][0]["processes"]
 
     # Registry rebuilt with all five entries
     registry = read_json(workspace / "registry.json")
@@ -81,6 +89,9 @@ def test_full_run_dry(workspace: Path) -> None:
     manifest = read_json(run_dir / "run.json")
     assert manifest["dry_run"] is True
     assert manifest["max_iterations"] == 2
+    assert manifest["source_value"] == "German healthcare back office"
+    assert manifest["config_source"] == "defaults"
+    assert manifest["prompt_version"]
     assert manifest["opportunities"] == [f"AM-{i:03d}" for i in range(1, 6)]
 
 
@@ -123,3 +134,27 @@ def test_opportunities_json_filters(workspace: Path) -> None:
     assert len(portfolio["filters"]["low_hanging"]) == 5
     assert len(portfolio["filters"]["high_value"]) == 5
     assert portfolio["filters"]["vision"] == []
+
+
+@pytest.mark.parametrize("iterations", [0, -1, 11])
+def test_invalid_iteration_count_fails_before_creating_run(
+    workspace: Path, iterations: int
+) -> None:
+    with pytest.raises(ValueError, match="between 1 and 10"):
+        run_mine(
+            workspace_path=workspace,
+            idea="Invalid iteration domain",
+            max_iterations=iterations,
+            dry_run=True,
+        )
+    assert not (workspace / "runs").exists()
+
+
+def test_urgent_constraint_publishes_only_top_three(workspace: Path) -> None:
+    result = run_mine(
+        workspace_path=workspace,
+        idea="Urgent domain",
+        constraints="urgent, needed in 1 week",
+        dry_run=True,
+    )
+    assert len(result["opportunities"]) == 3

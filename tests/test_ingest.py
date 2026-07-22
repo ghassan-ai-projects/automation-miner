@@ -8,6 +8,8 @@ from pathlib import Path
 import pytest
 
 from automation_miner.ingest import (
+    DIGEST_CHUNK_CHARS,
+    MAX_SLUG_CHARS,
     TOKEN_BUDGET_CHARS,
     ingest_file,
     ingest_idea,
@@ -28,6 +30,13 @@ def test_ingest_idea() -> None:
     assert packet.domain == "German healthcare back office"
     assert packet.constraints == "budget:low"
     assert packet.domain_slug == "german-healthcare-back-office"
+
+
+def test_ingest_idea_rejects_empty_and_bounds_slug() -> None:
+    with pytest.raises(ValueError, match="must not be empty"):
+        ingest_idea("  \n")
+    packet = ingest_idea("x" * 10_000)
+    assert len(packet.domain_slug) == MAX_SLUG_CHARS
 
 
 def test_ingest_file_markdown(tmp_path: Path) -> None:
@@ -55,6 +64,11 @@ def test_ingest_file_rejects_unsupported(tmp_path: Path) -> None:
     f.write_text("nope", encoding="utf-8")
     with pytest.raises(ValueError, match="Unsupported"):
         ingest_file(f)
+
+
+def test_ingest_file_rejects_missing_path(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="does not exist"):
+        ingest_file(tmp_path / "missing.md")
 
 
 def test_ingest_kb_under_budget(tmp_path: Path) -> None:
@@ -85,6 +99,30 @@ def test_ingest_kb_empty_raises(tmp_path: Path) -> None:
     kb.mkdir()
     with pytest.raises(ValueError, match="No supported files"):
         ingest_kb(kb)
+
+
+def test_ingest_kb_rejects_missing_folder(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="does not exist"):
+        ingest_kb(tmp_path / "missing")
+
+
+def test_oversized_file_is_chunked_before_digest(tmp_path: Path) -> None:
+    class RecordingModel:
+        def __init__(self) -> None:
+            self.prompts: list[str] = []
+
+        def chat(self, role: str, system: str, prompt: str) -> str:
+            self.prompts.append(prompt)
+            return "bounded digest"
+
+    kb = tmp_path / "kb"
+    kb.mkdir()
+    (kb / "large.md").write_text("x" * (TOKEN_BUDGET_CHARS * 2), encoding="utf-8")
+    model = RecordingModel()
+    packet = ingest_kb(kb, model=model)  # type: ignore[arg-type]
+    assert packet.digested
+    assert len(model.prompts) > 1
+    assert max(map(len, model.prompts)) < DIGEST_CHUNK_CHARS + 500
 
 
 def test_truncation_marks_packet() -> None:

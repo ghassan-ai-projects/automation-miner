@@ -93,3 +93,25 @@ def test_missing_api_key_raises(monkeypatch: pytest.MonkeyPatch) -> None:
     client, _ = _client(['{"name": "a", "value": 1}'])
     with pytest.raises(RuntimeError, match="OPENROUTER_API_KEY is not set"):
         client.call_json("mapper", "sys", "prompt", _Out)
+
+
+def test_non_object_json_retries() -> None:
+    client, sent = _client(["null", '{"name": "valid", "value": 5}'])
+    assert client.call_json("mapper", "sys", "prompt", _Out).value == 5
+    assert len(sent) == 2
+
+
+def test_malformed_provider_envelope_raises_runtime_error() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"choices": [{"unexpected": True}]})
+
+    http = httpx.Client(transport=httpx.MockTransport(handler))
+    client = MinerModel(_config(), http_client=http)
+    with pytest.raises(RuntimeError, match="malformed choice"):
+        client.call_json("mapper", "sys", "prompt", _Out)
+
+
+def test_close_releases_http_client() -> None:
+    client, _ = _client(['{"name": "a", "value": 1}'])
+    client.close()
+    assert client._http.is_closed

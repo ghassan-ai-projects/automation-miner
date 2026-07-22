@@ -41,7 +41,7 @@ def main() -> None:
 
     @server.call_tool()
     async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
-        response = dispatch(name, dict(arguments or {}), workspace)
+        response = await asyncio.to_thread(dispatch, name, dict(arguments or {}), workspace)
         return [TextContent(type="text", text=json.dumps(response.to_dict(), default=str))]
 
     import asyncio

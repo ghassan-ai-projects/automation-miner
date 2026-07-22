@@ -16,8 +16,10 @@ class FakeModel:
         self.critique_scores = critique_scores
         self.critic_calls = 0
         self.refiner_calls = 0
+        self.prompts: list[tuple[str, str]] = []
 
     def call_json(self, role: str, system: str, prompt: str, schema: type) -> Any:
+        self.prompts.append((role, prompt))
         if role == "critic":
             self.critic_calls += 1
             idx = min(self.critic_calls - 1, len(self.critique_scores) - 1)
@@ -71,3 +73,20 @@ def test_respects_max_iterations_when_never_passing() -> None:
     assert len(history) == 3
     assert not any(h["passed"] for h in history)
     assert final is not None
+
+
+def test_critic_and_refiner_receive_evidence_and_constraints() -> None:
+    model = FakeModel([5.0, 8.0])
+    run_critique_loop(
+        model,
+        _draft(),
+        [],
+        max_iterations=2,
+        evidence="source fact: 100 cases/day",
+        constraints="no custom dev",
+    )
+    critic_prompts = [prompt for role, prompt in model.prompts if role == "critic"]
+    refiner_prompts = [prompt for role, prompt in model.prompts if role == "refiner"]
+    assert all("100 cases/day" in prompt for prompt in critic_prompts)
+    assert "100 cases/day" in refiner_prompts[0]
+    assert "no custom dev" in refiner_prompts[0]

@@ -122,19 +122,18 @@ def _cmd_list(args: argparse.Namespace) -> int:
 
 def _cmd_show(args: argparse.Namespace) -> int:
     ws = Workspace(_resolve_workspace(args))
-    am_id = args.am_id.upper()
-    if not am_id.startswith("AM-"):
-        am_id = f"AM-{am_id}"
-    matches = sorted(ws.opps_dir.rglob(f"{am_id}-*.md")) if ws.opps_dir.exists() else []
-    if not matches:
+    found = ws.find_opportunity(args.am_id)
+    if found is None:
+        am_id = args.am_id.upper()
         print(f"Opportunity {am_id} not found.", file=sys.stderr)
         return 1
-    print(matches[0].read_text(encoding="utf-8"))
+    _, path = found
+    print(path.read_text(encoding="utf-8"))
     return 0
 
 
 def _cmd_report(args: argparse.Namespace) -> int:
-    path = _resolve_workspace(args) / "runs" / args.run_id / "report.md"
+    path = Workspace(_resolve_workspace(args)).run_report_path(args.run_id)
     if not path.is_file():
         print(f"No report at {path}.", file=sys.stderr)
         return 1
@@ -153,7 +152,7 @@ def main(argv: list[str] | None = None) -> int:
     }
     try:
         return handlers[args.command](args)
-    except (ValueError, RuntimeError) as exc:
+    except (OSError, ValueError, RuntimeError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
 

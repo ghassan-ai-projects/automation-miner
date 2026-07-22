@@ -19,7 +19,7 @@ from automation_miner import ingest as ing
 from automation_miner.artifacts.briefs import render_brief, title_slug
 from automation_miner.artifacts.registry import reindex
 from automation_miner.artifacts.reports import render_report, render_run_md
-from automation_miner.artifacts.workspace import Workspace, write_json
+from automation_miner.artifacts.workspace import Workspace, write_json, write_text
 from automation_miner.graph.loop import run_critique_loop
 from automation_miner.graph.state import MinerState
 from automation_miner.models.client import MinerModel
@@ -28,6 +28,7 @@ from automation_miner.prompts import (
     DOMAIN_MAP_SYSTEM,
     DRAFTER_SYSTEM,
     LAYER_ANALYST_SYSTEM,
+    PROMPT_VERSION,
     SCORER_SYSTEM,
     domain_map_prompt,
     draft_prompt,
@@ -53,6 +54,8 @@ from automation_miner.scoring import (
     rank,
     strategic_filters,
 )
+
+MAX_ITERATIONS = 10
 
 
 def build_graph(model: MinerModel, workspace: Workspace) -> Any:
@@ -114,7 +117,11 @@ def build_graph(model: MinerModel, workspace: Workspace) -> Any:
         analyses = sorted(
             state["layer_analyses"], key=lambda a: LAYER_ORDER.index(Layer(a["layer"]))
         )
-        shared = {"context": state["context"], "run_dir": state["run_dir"]}
+        shared = {
+            "context": state["context"],
+            "domain_map": state["domain_map"],
+            "run_dir": state["run_dir"],
+        }
         return [
             Send("draft_layer", {**shared, "layer": a["layer"], "analysis": a})
             for a in analyses
@@ -126,12 +133,22 @@ def build_graph(model: MinerModel, workspace: Workspace) -> Any:
         batch = model.call_json(
             "drafter",
             DRAFTER_SYSTEM,
-            draft_prompt(layer.value, _json(state["analysis"]), ctx.content),
+            draft_prompt(
+                layer.value,
+                _json(state["analysis"]),
+                ctx.content,
+                ctx.constraints,
+                _json(state["domain_map"]),
+            ),
             DraftBatch,
         )
         drafts = [
             d.model_copy(update={"layer": layer}).model_dump(mode="json") for d in batch.drafts
         ]
+        write_json(
+            Path(state["run_dir"]) / "drafts" / f"{layer.value}.batch.json",
+            {"layer": layer.value, "drafts": drafts},
+        )
         return {"drafts": drafts}
 
     def critique_refine_node(state: MinerState) -> dict[str, Any]:
@@ -141,14 +158,20 @@ def build_graph(model: MinerModel, workspace: Workspace) -> Any:
             state["drafts"],
             key=lambda d: (LAYER_ORDER.index(Layer(d["layer"])), d["title"]),
         )
-        next_number = workspace.next_am_number()
+        reserved_numbers = workspace.reserve_am_numbers(len(ordered))
         refined: list[dict[str, Any]] = []
         for i, raw in enumerate(ordered):
-            am_id = f"AM-{next_number + i:03d}"
+            am_id = f"AM-{reserved_numbers[i]:03d}"
             draft = OpportunityDraft.model_validate(raw)
             others = [d["title"] for d in ordered if d is not raw]
+            evidence = f"{ctx.content}\n\nDomain map:\n{_json(state['domain_map'])}"
             final, history = run_critique_loop(
-                model, draft, others, state["max_iterations"]
+                model,
+                draft,
+                others,
+                state["max_iterations"],
+                evidence=evidence,
+                constraints=ctx.constraints,
             )
             for entry in history:
                 write_json(run_dir / "drafts" / f"{am_id}.v{entry['version']}.json", entry)
@@ -192,12 +215,20 @@ def build_graph(model: MinerModel, workspace: Workspace) -> Any:
                 overrides_applied=applied,
             )
             opportunities.append(opp.model_dump(mode="json"))
+        write_json(
+            Path(state["run_dir"]) / "scores.json",
+            {"opportunities": opportunities},
+        )
         return {"opportunities": opportunities}
 
     def rank_filter_node(state: MinerState) -> dict[str, Any]:
         ranked = rank(
             [Opportunity.model_validate(o) for o in state["opportunities"]],
             state["constraints"],
+        )
+        write_json(
+            Path(state["run_dir"]) / "ranked.json",
+            {"opportunities": [o.model_dump(mode="json") for o in ranked]},
         )
         return {"opportunities": [o.model_dump(mode="json") for o in ranked]}
 
@@ -210,9 +241,7 @@ def build_graph(model: MinerModel, workspace: Workspace) -> Any:
         brief_files = []
         for opp in ranked:
             fname = f"{opp.am_id}-{title_slug(opp.draft.title)}.md"
-            (opp_dir / fname).write_text(
-                render_brief(opp, state["run_id"]), encoding="utf-8"
-            )
+            write_text(opp_dir / fname, render_brief(opp, state["run_id"]))
             brief_files.append(str(opp_dir / fname))
 
         filters = {
@@ -228,7 +257,8 @@ def build_graph(model: MinerModel, workspace: Workspace) -> Any:
                 "filters": filters,
             },
         )
-        (run_dir / "run.md").write_text(
+        write_text(
+            run_dir / "run.md",
             render_run_md(
                 state["run_id"],
                 ctx,
@@ -236,10 +266,9 @@ def build_graph(model: MinerModel, workspace: Workspace) -> Any:
                 [LayerAnalysis.model_validate(a) for a in state["layer_analyses"]],
                 ranked,
             ),
-            encoding="utf-8",
         )
         report = render_report(ranked)
-        (run_dir / "report.md").write_text(report, encoding="utf-8")
+        write_text(run_dir / "report.md", report)
 
         duration = time.time() - state.get("start_ts", time.time())
         manifest = RunManifest(
@@ -248,11 +277,14 @@ def build_graph(model: MinerModel, workspace: Workspace) -> Any:
             domain_slug=ctx.domain_slug,
             constraints=ctx.constraints,
             source_kind=ctx.source_kind,
+            source_value=state["input_value"],
             created=state["created"],
             finished=f"{datetime.now():%Y-%m-%dT%H:%M:%S}",
             duration_seconds=round(duration, 2),
             max_iterations=state["max_iterations"],
-            profile=state.get("profile", "default"),  # type: ignore[arg-type]
+            profile=state.get("profile", "default"),
+            config_source=model.config.source,
+            prompt_version=PROMPT_VERSION,
             dry_run=model.dry_run,
             models=model.routing_table(),
             opportunities=[o.am_id for o in ranked],
@@ -305,6 +337,8 @@ def run_mine(
     provided = [x is not None for x in (idea, file, kb)]
     if sum(provided) != 1:
         raise ValueError("Provide exactly one of idea, file, or kb.")
+    if not 1 <= max_iterations <= MAX_ITERATIONS:
+        raise ValueError(f"max_iterations must be between 1 and {MAX_ITERATIONS}")
     if idea is not None:
         kind, value = "idea", idea
     elif file is not None:
@@ -312,23 +346,27 @@ def run_mine(
     else:
         kind, value = "kb", str(kb)
 
+    owns_model = model is None
     if model is None:
         model = MinerModel(load_config(workspace_path, profile), dry_run=dry_run)
-    workspace = Workspace(workspace_path)
-    workspace.ensure()
-
-    initial: dict[str, Any] = {
-        "workspace": str(workspace_path),
-        "input_kind": kind,
-        "input_value": value,
-        "constraints": constraints,
-        "max_iterations": max_iterations,
-        "profile": profile,
-        "created": f"{datetime.now():%Y-%m-%dT%H:%M:%S}",
-        "start_ts": time.time(),
-        "layer_analyses": [],
-        "drafts": [],
-    }
-    graph = build_graph(model, workspace)
-    result: MinerState = graph.invoke(initial)  # type: ignore[assignment]
-    return result
+    try:
+        workspace = Workspace(workspace_path)
+        workspace.ensure()
+        initial: dict[str, Any] = {
+            "workspace": str(workspace_path),
+            "input_kind": kind,
+            "input_value": value,
+            "constraints": constraints,
+            "max_iterations": max_iterations,
+            "profile": profile,
+            "created": f"{datetime.now():%Y-%m-%dT%H:%M:%S}",
+            "start_ts": time.time(),
+            "layer_analyses": [],
+            "drafts": [],
+        }
+        graph = build_graph(model, workspace)
+        result: MinerState = graph.invoke(initial)  # type: ignore[assignment]
+        return result
+    finally:
+        if owns_model:
+            model.close()

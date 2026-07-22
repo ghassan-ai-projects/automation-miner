@@ -6,15 +6,21 @@ of the original regex parser), and builds the compact cross-indexed registry.
 
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 import yaml
 
+from automation_miner.schemas import OppStatus
+
 LAYERS = ("document", "communication", "decision", "monitoring", "knowledge")
 ICE_RANGES = ("vision_80plus", "high_60_79", "medium_40_59", "low_under_40")
-STATUSES = ("identified", "validating", "designing", "building", "live", "deprecated")
+STATUSES = tuple(status.value for status in OppStatus)
+STATUS_ALIASES = {"validating": OppStatus.EVALUATING.value, "building": OppStatus.IMPLEMENTING.value}
+_BRIEF_ID_RE = re.compile(r"^(AM-\d+)-")
+_AM_ID_RE = re.compile(r"AM-\d+")
 
 
 def parse_frontmatter(text: str) -> dict[str, Any]:
@@ -43,6 +49,8 @@ def build_registry(base: Path) -> dict[str, Any]:
     opps_dir = base / "opps"
     entries: list[dict[str, Any]] = []
     domains: dict[str, dict[str, Any]] = {}
+    warnings: list[dict[str, str]] = []
+    seen_ids: set[str] = set()
 
     if opps_dir.exists():
         for domain_dir in sorted(p for p in opps_dir.iterdir() if p.is_dir()):
@@ -50,13 +58,25 @@ def build_registry(base: Path) -> dict[str, Any]:
             domain_entries: list[dict[str, Any]] = []
             for f in sorted(domain_dir.glob("AM-*.md")):
                 meta = parse_frontmatter(f.read_text(encoding="utf-8"))
+                filename_match = _BRIEF_ID_RE.match(f.name)
+                filename_id = filename_match.group(1) if filename_match else ""
+                am_id = str(meta.get("am-id", "")).upper()
+                if not _AM_ID_RE.fullmatch(am_id) or am_id != filename_id:
+                    warnings.append(
+                        {"file": str(f), "reason": "frontmatter am-id is missing or mismatched"}
+                    )
+                    continue
+                if am_id in seen_ids:
+                    warnings.append({"file": str(f), "reason": f"duplicate opportunity id {am_id}"})
+                    continue
+                seen_ids.add(am_id)
                 entry: dict[str, Any] = {
-                    "i": str(meta.get("am-id", "")),
+                    "i": am_id,
                     "t": str(meta.get("title", f.stem)),
                     "l": str(meta.get("layer", "unknown")),
                     "ice": _int(meta.get("ice-score")) or 0,
                     "d": slug,
-                    "s": str(meta.get("status", "identified")),
+                    "s": _status(meta.get("status")),
                     "f": str(f),
                 }
                 for key, short in (("impact", "im"), ("confidence", "co"), ("ease", "ea")):
@@ -99,11 +119,17 @@ def build_registry(base: Path) -> dict[str, Any]:
     top = max(entries, key=lambda e: e["ice"]) if entries else {}
     bottom = min(entries, key=lambda e: e["ice"]) if entries else {}
 
+    runs_dir = base / "runs"
+    run_count = (
+        sum(1 for path in runs_dir.iterdir() if path.is_dir()) if runs_dir.is_dir() else 0
+    )
+
     return {
         "v": 2,
         "ts": f"{datetime.now():%Y-%m-%dT%H:%M:%S}",
         "stats": {
-            "runs": len(domains),
+            "runs": run_count,
+            "domains": len(domains),
             "opps": len(entries),
             "avg_ice": round(sum(ices) / len(ices), 1) if ices else 0,
             "top_ice": top.get("ice", 0),
@@ -118,6 +144,7 @@ def build_registry(base: Path) -> dict[str, Any]:
         "by_ice_range": by_ice_range,
         "by_status": by_status,
         "entries": sorted(entries, key=lambda e: e["ice"], reverse=True),
+        "warnings": warnings,
     }
 
 
@@ -128,3 +155,9 @@ def reindex(base: Path) -> dict[str, Any]:
     registry = build_registry(base)
     write_json(base / "registry.json", registry)
     return registry
+
+
+def _status(value: Any) -> str:
+    status = str(value or OppStatus.IDENTIFIED.value).casefold()
+    status = STATUS_ALIASES.get(status, status)
+    return status if status in STATUSES else OppStatus.IDENTIFIED.value

@@ -26,9 +26,11 @@ share/python-wheels/
 *.egg
 MANIFEST
 
-# docs/ — generated docs root; spec files exception tracked via force-add
-docs/
+# docs/ — generated docs root; keep the implementation contract and source spec
+docs/*
+!docs/DESIGN.md
 !docs/spec/
+!docs/spec/**
 
 # PyInstaller
 #   Usually these files are written by a python script from a template

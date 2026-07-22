@@ -49,6 +49,10 @@ class MinerModel:
     def routing_table(self) -> dict[str, str]:
         return self.config.routing_table(dry_run=self.dry_run)
 
+    def close(self) -> None:
+        """Release the underlying HTTP connection pool."""
+        self._http.close()
+
     def chat(self, role: str, system: str, prompt: str) -> str:
         """Plain-text completion for one role (used for KB digests)."""
         route = self.config.resolve(role, dry_run=self.dry_run)
@@ -129,19 +133,39 @@ class MinerModel:
             raise RuntimeError(
                 f"Chat completion failed for provider {route.provider!r}: {exc}"
             ) from exc
-        data = resp.json()
+        try:
+            data = resp.json()
+        except ValueError as exc:
+            raise RuntimeError(
+                f"Provider {route.provider!r} returned an invalid JSON response."
+            ) from exc
+        if not isinstance(data, dict):
+            raise RuntimeError(f"Provider {route.provider!r} returned a non-object response.")
         choices = data.get("choices", [])
-        if not choices:
+        if not isinstance(choices, list) or not choices:
             raise RuntimeError(f"Provider {route.provider!r} returned no choices.")
-        return str(choices[0].get("message", {}).get("content", ""))
+        first = choices[0]
+        if not isinstance(first, dict) or not isinstance(first.get("message"), dict):
+            raise RuntimeError(f"Provider {route.provider!r} returned a malformed choice.")
+        content = first["message"].get("content")
+        if not isinstance(content, str) or not content.strip():
+            raise RuntimeError(f"Provider {route.provider!r} returned empty content.")
+        return content
 
 
 def _extract_json(text: str) -> dict[str, Any]:
     """Parse a model response into a JSON object, tolerating fences/prose."""
     text = text.strip()
+
+    def parse_object(candidate: str) -> dict[str, Any]:
+        value = json.loads(candidate)
+        if not isinstance(value, dict):
+            raise ValueError("Model response JSON must be an object.")
+        return value
+
     try:
-        return dict(json.loads(text))
-    except json.JSONDecodeError:
+        return parse_object(text)
+    except (json.JSONDecodeError, ValueError):
         pass
     for fence in ("```json", "```"):
         if fence in text:
@@ -150,13 +174,13 @@ def _extract_json(text: str) -> dict[str, Any]:
             if close != -1:
                 block = block[:close]
             try:
-                return dict(json.loads(block.strip()))
-            except json.JSONDecodeError:
+                return parse_object(block.strip())
+            except (json.JSONDecodeError, ValueError):
                 pass
     start, end = text.find("{"), text.rfind("}")
     if start != -1 and end > start:
         try:
-            return dict(json.loads(text[start : end + 1]))
-        except json.JSONDecodeError:
+            return parse_object(text[start : end + 1])
+        except (json.JSONDecodeError, ValueError):
             pass
     raise ValueError(f"Model response is not valid JSON. Preview: {text[:200]}")

@@ -137,3 +137,41 @@ def test_rank_ease_first_when_urgent() -> None:
     ranked = rank(opps, constraints="urgent")
     assert ranked[0].am_id == "AM-002"
     assert [o.am_id for o in rank(opps)] == ["AM-001", "AM-002"]
+
+
+def test_urgent_policy_limits_output_to_three() -> None:
+    opps = [_opp(f"AM-{i:03d}", 3, 3, i) for i in range(1, 6)]
+    ranked = rank(opps, constraints="timeline:tight")
+    assert len(ranked) == 3
+    assert [o.score.ease for o in ranked] == [5, 4, 3]
+
+
+def test_low_budget_policy_excludes_low_ease() -> None:
+    opps = [_opp("AM-001", 5, 5, 3), _opp("AM-002", 3, 3, 4)]
+    assert [o.am_id for o in rank(opps, constraints="budget:low")] == ["AM-002"]
+
+
+def test_infrastructure_policy_limits_layers() -> None:
+    document = _opp("AM-001", 3, 3, 3)
+    monitoring = _opp("AM-002", 3, 3, 3).model_copy(
+        update={
+            "draft": _opp("AM-002", 3, 3, 3).draft.model_copy(
+                update={"layer": "monitoring"}
+            )
+        }
+    )
+    assert [
+        o.am_id for o in rank([document, monitoring], "no existing infrastructure")
+    ] == ["AM-001"]
+    assert [o.am_id for o in rank([document, monitoring], "existing mature stack")] == [
+        "AM-002"
+    ]
+
+
+def test_agent_limit_filters_multi_agent_topologies() -> None:
+    single = _opp("AM-001", 3, 3, 3)
+    multi = _opp("AM-002", 5, 5, 5)
+    multi = multi.model_copy(
+        update={"draft": multi.draft.model_copy(update={"agents_required": "3 agents"})}
+    )
+    assert [o.am_id for o in rank([single, multi], "agent limit: 1")] == ["AM-001"]

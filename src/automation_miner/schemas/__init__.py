@@ -9,7 +9,13 @@ from __future__ import annotations
 from enum import StrEnum
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+
+class ArtifactModel(BaseModel):
+    """Strict base contract for model responses and persisted artifacts."""
+
+    model_config = ConfigDict(extra="forbid")
 
 
 class Layer(StrEnum):
@@ -56,7 +62,7 @@ class OppStatus(StrEnum):
     DEPRECATED = "deprecated"
 
 
-class ContextPacket(BaseModel):
+class ContextPacket(ArtifactModel):
     """Normalized, budget-bounded input for the pipeline."""
 
     domain: str
@@ -69,11 +75,19 @@ class ContextPacket(BaseModel):
     truncated: bool = False
 
 
-class DomainMap(BaseModel):
+class StakeholderProcess(ArtifactModel):
+    """One stakeholder and the domain processes they own or participate in."""
+
+    stakeholder: str
+    processes: list[str] = Field(min_length=1)
+
+
+class DomainMap(ArtifactModel):
     """Phase 1 output: structured model of the domain."""
 
     core_function: str
     stakeholders: list[str]
+    stakeholder_processes: list[StakeholderProcess]
     information_flow: str
     decision_density: str
     compliance_surface: str
@@ -83,7 +97,7 @@ class DomainMap(BaseModel):
     workflow_patterns: str
 
 
-class LayerAnalysis(BaseModel):
+class LayerAnalysis(ArtifactModel):
     """Phase 2 output for one layer."""
 
     layer: Layer
@@ -92,21 +106,21 @@ class LayerAnalysis(BaseModel):
     pain_level: Level
 
 
-class RiskRow(BaseModel):
+class RiskRow(ArtifactModel):
     risk: str
     likelihood: Level
     impact: Level
     mitigation: str
 
 
-class ImpactRow(BaseModel):
+class ImpactRow(ArtifactModel):
     dimension: str
     current: str
     automated: str
     improvement: str
 
 
-class PhasePlan(BaseModel):
+class PhasePlan(ArtifactModel):
     """Implementation path: MVP, expansion, autonomy."""
 
     mvp: list[str]
@@ -114,7 +128,7 @@ class PhasePlan(BaseModel):
     autonomy: list[str]
 
 
-class OpportunityDraft(BaseModel):
+class OpportunityDraft(ArtifactModel):
     """A single automation opportunity draft (pre-scoring)."""
 
     layer: Layer
@@ -137,7 +151,7 @@ class OpportunityDraft(BaseModel):
     risk_level: Level
 
 
-class DraftBatch(BaseModel):
+class DraftBatch(ArtifactModel):
     """Wrapper so the drafter can return 1-2 drafts as one JSON object."""
 
     drafts: list[OpportunityDraft] = Field(min_length=1, max_length=2)
@@ -155,7 +169,7 @@ CRITIQUE_WEIGHTS: dict[str, float] = {
 CRITIQUE_THRESHOLD = 7.5
 
 
-class Critique(BaseModel):
+class Critique(ArtifactModel):
     """Critic output: six rubric dimensions (0-10) plus feedback."""
 
     groundedness: float = Field(ge=0, le=10)
@@ -178,7 +192,7 @@ class Critique(BaseModel):
         return self.overall >= CRITIQUE_THRESHOLD
 
 
-class ICEScore(BaseModel):
+class ICEScore(ArtifactModel):
     """LLM-proposed ICE factors with rationale; product computed by code."""
 
     impact: int = Field(ge=1, le=5)
@@ -191,34 +205,43 @@ class ICEScore(BaseModel):
         return self.impact * self.confidence * self.ease
 
 
-class Opportunity(BaseModel):
+class Opportunity(ArtifactModel):
     """Final scored opportunity, ready to publish."""
 
-    am_id: str
+    am_id: str = Field(pattern=r"^AM-(?:00[1-9]|0[1-9]\d|[1-9]\d{2,})$")
     domain: str
     domain_slug: str
     status: OppStatus = OppStatus.IDENTIFIED
     draft: OpportunityDraft
     score: ICEScore
-    ice: int
-    critique_overall: float
-    iterations: int
+    ice: int = Field(ge=1, le=125)
+    critique_overall: float = Field(ge=0, le=10)
+    iterations: int = Field(ge=1)
     overrides_applied: list[str] = Field(default_factory=list)
 
+    @model_validator(mode="after")
+    def validate_ice_product(self) -> Opportunity:
+        if self.ice != self.score.ice:
+            raise ValueError("ice must equal impact x confidence x ease")
+        return self
 
-class RunManifest(BaseModel):
+
+class RunManifest(ArtifactModel):
     """run.json — what happened in one pipeline run."""
 
-    run_id: str
+    run_id: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}_[a-z0-9]+(?:-[a-z0-9]+)*$")
     domain: str
     domain_slug: str
     constraints: str
-    source_kind: str
+    source_kind: Literal["idea", "file", "kb"]
+    source_value: str = Field(min_length=1)
     created: str
     finished: str = ""
-    duration_seconds: float = 0.0
-    max_iterations: int
+    duration_seconds: float = Field(default=0.0, ge=0)
+    max_iterations: int = Field(ge=1, le=10)
     profile: str
+    config_source: str
+    prompt_version: str
     dry_run: bool
     models: dict[str, str] = Field(default_factory=dict)
     opportunities: list[str] = Field(default_factory=list)

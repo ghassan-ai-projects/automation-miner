@@ -28,6 +28,34 @@ def test_mine_requires_input(workspace: Path, capsys) -> None:
     assert "provide an idea" in capsys.readouterr().err
 
 
+def test_mine_rejects_zero_iterations(workspace: Path, capsys) -> None:
+    rc = main(
+        [
+            "mine",
+            "CLI test domain",
+            "--iterations",
+            "0",
+            "--dry-run",
+            "--workspace",
+            str(workspace),
+        ]
+    )
+    assert rc == 1
+    assert "between 1 and 10" in capsys.readouterr().err
+
+
+def test_show_accepts_unpadded_numeric_id(workspace: Path, capsys) -> None:
+    _mine(workspace)
+    assert main(["show", "2", "--workspace", str(workspace)]) == 0
+    assert "# AM-002:" in capsys.readouterr().out
+
+
+def test_report_rejects_path_traversal(workspace: Path, capsys) -> None:
+    rc = main(["report", "../../private", "--workspace", str(workspace)])
+    assert rc == 1
+    assert "Invalid run id" in capsys.readouterr().err
+
+
 def test_reindex(workspace: Path, capsys) -> None:
     _mine(workspace)
     rc = main(["reindex", "--workspace", str(workspace)])

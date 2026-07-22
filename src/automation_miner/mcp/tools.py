@@ -21,9 +21,10 @@ INPUT_TYPES = ("auto", "idea", "file", "kb")
 def _mine_domain(root: Path, args: dict[str, Any]) -> dict[str, Any]:
     from automation_miner.graph.build import run_mine
 
-    raw_input = str(args.get("input", ""))
-    if not raw_input:
+    input_value = args.get("input", "")
+    if not isinstance(input_value, str) or not input_value.strip():
         raise MCPError(MCPErrorCode.VALIDATION_ERROR, "input is required")
+    raw_input = input_value.strip()
     input_type = str(args.get("input_type", "auto"))
     if input_type not in INPUT_TYPES:
         raise MCPError(
@@ -34,12 +35,26 @@ def _mine_domain(root: Path, args: dict[str, Any]) -> dict[str, Any]:
     if input_type == "auto":
         input_type = "kb" if path.is_dir() else "file" if path.is_file() else "idea"
 
+    raw_iterations = args.get("max_iterations", 2)
+    if isinstance(raw_iterations, bool):
+        raise MCPError(MCPErrorCode.VALIDATION_ERROR, "max_iterations must be an integer")
+    try:
+        max_iterations = int(raw_iterations)
+    except (TypeError, ValueError) as exc:
+        raise MCPError(
+            MCPErrorCode.VALIDATION_ERROR, "max_iterations must be an integer"
+        ) from exc
+
+    dry_run = args.get("dry_run", False)
+    if not isinstance(dry_run, bool):
+        raise MCPError(MCPErrorCode.VALIDATION_ERROR, "dry_run must be a boolean")
+
     kwargs: dict[str, Any] = {
         "workspace_path": root,
         "constraints": str(args.get("constraints", "")),
-        "max_iterations": int(args.get("max_iterations", 2)),
+        "max_iterations": max_iterations,
         "profile": str(args.get("profile", "default")),
-        "dry_run": bool(args.get("dry_run", False)),
+        "dry_run": dry_run,
     }
     if input_type == "idea":
         kwargs["idea"] = raw_input
@@ -48,7 +63,10 @@ def _mine_domain(root: Path, args: dict[str, Any]) -> dict[str, Any]:
     else:
         kwargs["kb"] = path
 
-    result = run_mine(**kwargs)
+    try:
+        result = run_mine(**kwargs)
+    except ValueError as exc:
+        raise MCPError(MCPErrorCode.VALIDATION_ERROR, str(exc)) from exc
     run_dir = Path(result["run_dir"])
     return {
         "run_id": result["run_id"],
@@ -72,22 +90,36 @@ def _list_domains(root: Path, args: dict[str, Any]) -> dict[str, Any]:
 
 
 def _get_opportunity(root: Path, args: dict[str, Any]) -> dict[str, Any]:
-    am_id = str(args.get("am_id", "")).upper()
-    if not am_id.startswith("AM-"):
-        am_id = f"AM-{am_id}"
     ws = Workspace(root)
-    matches = sorted(ws.opps_dir.rglob(f"{am_id}-*.md")) if ws.opps_dir.exists() else []
-    if not matches:
+    try:
+        found = ws.find_opportunity(str(args.get("am_id", "")))
+    except ValueError as exc:
+        raise MCPError(MCPErrorCode.VALIDATION_ERROR, str(exc)) from exc
+    if found is None:
+        am_id = str(args.get("am_id", "")).upper()
         raise MCPError(MCPErrorCode.NOT_FOUND, f"Opportunity {am_id} not found")
-    return {"am_id": am_id, "path": str(matches[0]), "brief": matches[0].read_text("utf-8")}
+    am_id, path = found
+    return {"am_id": am_id, "path": str(path), "brief": path.read_text("utf-8")}
 
 
 def _query_registry(root: Path, args: dict[str, Any]) -> dict[str, Any]:
+    min_ice: int | None = None
+    if "min_ice" in args and args["min_ice"] is not None:
+        value = args["min_ice"]
+        if isinstance(value, bool):
+            raise MCPError(MCPErrorCode.VALIDATION_ERROR, "min_ice must be an integer")
+        try:
+            min_ice = int(value)
+        except (TypeError, ValueError) as exc:
+            raise MCPError(MCPErrorCode.VALIDATION_ERROR, "min_ice must be an integer") from exc
+        if not 0 <= min_ice <= 125:
+            raise MCPError(MCPErrorCode.VALIDATION_ERROR, "min_ice must be between 0 and 125")
+
     entries = _registry(root).get("entries", [])
     if layer := args.get("layer"):
         entries = [e for e in entries if e["l"] == layer]
-    if min_ice := args.get("min_ice"):
-        entries = [e for e in entries if e["ice"] >= int(min_ice)]
+    if min_ice is not None:
+        entries = [e for e in entries if e["ice"] >= min_ice]
     if status := args.get("status"):
         entries = [e for e in entries if e["s"] == status]
     if domain := args.get("domain"):
@@ -97,7 +129,10 @@ def _query_registry(root: Path, args: dict[str, Any]) -> dict[str, Any]:
 
 def _get_run_report(root: Path, args: dict[str, Any]) -> dict[str, Any]:
     run_id = str(args.get("run_id", ""))
-    path = root / "runs" / run_id / "report.md"
+    try:
+        path = Workspace(root).run_report_path(run_id)
+    except ValueError as exc:
+        raise MCPError(MCPErrorCode.VALIDATION_ERROR, str(exc)) from exc
     if not path.is_file():
         raise MCPError(MCPErrorCode.NOT_FOUND, f"No report for run {run_id!r}")
     return {"run_id": run_id, "report": path.read_text(encoding="utf-8")}
@@ -145,7 +180,7 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
             "input_type": {"type": "string", "enum": list(INPUT_TYPES), "default": "auto"},
             "constraints": {"type": "string", "default": ""},
             "profile": {"type": "string", "default": "default"},
-            "max_iterations": {"type": "integer", "default": 2},
+            "max_iterations": {"type": "integer", "minimum": 1, "maximum": 10, "default": 2},
             "dry_run": {
                 "type": "boolean",
                 "default": False,
@@ -165,7 +200,7 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
         "type": "object",
         "properties": {
             "layer": {"type": "string"},
-            "min_ice": {"type": "integer"},
+            "min_ice": {"type": "integer", "minimum": 0, "maximum": 125},
             "status": {"type": "string"},
             "domain": {"type": "string"},
         },
@@ -203,7 +238,7 @@ def dispatch(tool: str, args: dict[str, Any], workspace: Path) -> MCPResponse:
         return MCPResponse(success=True, data=handler(workspace, args))
     except MCPError as exc:
         return MCPResponse(success=False, error=exc)
-    except (ValueError, RuntimeError) as exc:
+    except Exception as exc:
         return MCPResponse(
             success=False, error=MCPError(MCPErrorCode.INTERNAL_ERROR, str(exc))
         )

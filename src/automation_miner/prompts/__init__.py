@@ -103,7 +103,8 @@ You are the domain-mapping role of an automation-discovery engine (Phase 1).
 Build a structured model of the domain: key actors, workflows, information
 flows, pain points. Cover: core function, stakeholders, information flow,
 decision density, compliance surface, technology maturity, scale indicators,
-manual friction, workflow patterns. Look for handoff points, translation
+manual friction, workflow patterns, and each stakeholder's concrete processes.
+Look for handoff points, translation
 points, approval gates, and reporting loops — classic automation targets.
 
 {CONSTRAINT_RULES}
@@ -177,25 +178,41 @@ def layer_analysis_prompt(layer: str, domain: str, constraints: str, context: st
     )
 
 
-def draft_prompt(layer: str, analysis_json: str, context: str) -> str:
+def draft_prompt(
+    layer: str,
+    analysis_json: str,
+    context: str,
+    constraints: str = "",
+    domain_map_json: str = "",
+) -> str:
     return (
-        f"Layer: {layer}\n\nLayer analysis:\n{analysis_json}\n\n"
+        f"Layer: {layer}\nConstraints: {constraints or 'none'}\n\n"
+        f"Domain map:\n{domain_map_json}\n\n"
+        f"Layer analysis:\n{analysis_json}\n\n"
         f"Domain context:\n{context}\n\n"
         "Produce the DraftBatch JSON with 1-2 drafts for this layer."
     )
 
 
-def critique_prompt(draft_json: str, other_titles: list[str]) -> str:
+def critique_prompt(draft_json: str, other_titles: list[str], evidence: str = "") -> str:
     others = ", ".join(other_titles) or "none"
     return (
         f"Other opportunities in this run (for differentiation): {others}\n\n"
+        f"Source evidence for groundedness checks:\n{evidence}\n\n"
         f"Draft under review:\n{draft_json}\n\n"
         "Produce the Critique JSON."
     )
 
 
-def refine_prompt(draft_json: str, critique_json: str) -> str:
+def refine_prompt(
+    draft_json: str,
+    critique_json: str,
+    evidence: str = "",
+    constraints: str = "",
+) -> str:
     return (
+        f"Constraints: {constraints or 'none'}\n\n"
+        f"Source evidence:\n{evidence}\n\n"
         f"Current draft:\n{draft_json}\n\nCritique to address:\n{critique_json}\n\n"
         "Produce the refined OpportunityDraft JSON."
     )

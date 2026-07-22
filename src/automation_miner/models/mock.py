@@ -31,6 +31,15 @@ def _domain_map() -> dict[str, Any]:
     return {
         "core_function": "Deliver the domain's core service through coordinated operational work.",
         "stakeholders": ["Operations team", "Customers", "Management", "Regulators"],
+        "stakeholder_processes": [
+            {
+                "stakeholder": "Operations team",
+                "processes": ["Intake", "Validation", "Service delivery", "Reporting"],
+            },
+            {"stakeholder": "Customers", "processes": ["Request submission", "Review"]},
+            {"stakeholder": "Management", "processes": ["Approval", "Performance review"]},
+            {"stakeholder": "Regulators", "processes": ["Audit", "Compliance review"]},
+        ],
         "information_flow": (
             "Documents, approvals, and status reports move between teams "
             "via email and shared systems."

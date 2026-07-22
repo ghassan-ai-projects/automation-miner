@@ -7,10 +7,55 @@ rules, and bucket opportunities into action tiers.
 
 from __future__ import annotations
 
-from automation_miner.schemas import ICEScore, Level, Opportunity
+import re
+from dataclasses import dataclass
+
+from automation_miner.schemas import ICEScore, Layer, Level, Opportunity
 
 SCORE_MIN = 1
 SCORE_MAX = 5
+
+
+@dataclass(frozen=True)
+class ConstraintPolicy:
+    """Deterministic policy flags parsed from the documented free-form syntax."""
+
+    low_budget: bool = False
+    no_coding: bool = False
+    compliance: bool = False
+    urgent: bool = False
+    no_infrastructure: bool = False
+    mature_stack: bool = False
+    agent_limit: int | None = None
+
+
+def parse_constraint_policy(constraints: str) -> ConstraintPolicy:
+    """Recognize stable constraint phrases without pretending to understand arbitrary prose."""
+    text = constraints.casefold()
+    agent_match = re.search(r"agent[\s_-]*limit\s*[:=]?\s*(\d+)", text)
+    team_match = re.search(r"team\s*[:=]?\s*([1-3])(?:\D|$)", text)
+    agent_limit = int(agent_match.group(1)) if agent_match else None
+    if agent_limit is None and "agent limit" in text:
+        agent_limit = 1
+    if agent_limit is None and ("small team" in text or team_match):
+        agent_limit = 2
+    return ConstraintPolicy(
+        low_budget=bool(
+            re.search(r"budget\s*[:=]?\s*(?:low|zero)", text)
+            or "no budget" in text
+        ),
+        no_coding="no coding" in text or "no custom dev" in text,
+        compliance="compliance" in text or "regulated" in text,
+        urgent=bool(
+            "urgent" in text
+            or "1 week" in text
+            or "tight timeline" in text
+            or re.search(r"timeline\s*[:=]?\s*tight", text)
+        ),
+        no_infrastructure="no existing infrastructure" in text,
+        mature_stack="existing mature stack" in text or "mature stack" in text,
+        agent_limit=agent_limit,
+    )
 
 
 def validate_score(value: int) -> int:
@@ -69,8 +114,7 @@ def apply_constraint_overrides(
 
 def ease_first(constraints: str) -> bool:
     """Whether constraints force Ease-first ranking (urgent / 1 week)."""
-    text = constraints.lower()
-    return "urgent" in text or "1 week" in text
+    return parse_constraint_policy(constraints).urgent
 
 
 def strategic_filters(opp: Opportunity) -> dict[str, bool]:
@@ -84,11 +128,41 @@ def strategic_filters(opp: Opportunity) -> dict[str, bool]:
 
 
 def rank(opportunities: list[Opportunity], constraints: str = "") -> list[Opportunity]:
-    """Sort by ICE descending; with urgent constraints, Ease first then ICE."""
-    if ease_first(constraints):
-        return sorted(
-            opportunities,
+    """Apply hard portfolio constraints, then sort according to the active policy."""
+    policy = parse_constraint_policy(constraints)
+    eligible = list(opportunities)
+
+    if policy.low_budget or policy.no_coding:
+        eligible = [o for o in eligible if o.score.ease >= 4]
+    if policy.compliance:
+        eligible = [o for o in eligible if o.draft.risk_level != Level.HIGH]
+    if policy.no_infrastructure:
+        eligible = [
+            o for o in eligible if o.draft.layer in {Layer.DOCUMENT, Layer.KNOWLEDGE}
+        ]
+    if policy.mature_stack:
+        eligible = [
+            o
+            for o in eligible
+            if o.draft.layer in {Layer.COMMUNICATION, Layer.DECISION, Layer.MONITORING}
+        ]
+    if policy.agent_limit is not None:
+        eligible = [
+            o
+            for o in eligible
+            if (_agent_count(o.draft.agents_required) or 1) <= policy.agent_limit
+        ]
+
+    if policy.urgent:
+        ranked = sorted(
+            eligible,
             key=lambda o: (o.score.ease, o.ice),
             reverse=True,
         )
-    return sorted(opportunities, key=lambda o: o.ice, reverse=True)
+        return ranked[:3]
+    return sorted(eligible, key=lambda o: o.ice, reverse=True)
+
+
+def _agent_count(description: str) -> int | None:
+    match = re.search(r"\b(\d+)\b", description)
+    return int(match.group(1)) if match else None
