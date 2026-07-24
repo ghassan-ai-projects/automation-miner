@@ -1,5 +1,7 @@
 # automation-miner
 
+> **Author:** [Ghassan Alhamoud](https://ghassan-alhamoud.com)
+
 Structured domain analysis and automation discovery engine. Give it any industry
 vertical, business process, or operational domain — a one-liner, a brief file, or a
 whole knowledge-base folder — and it produces a ranked portfolio of **AM-XXX
