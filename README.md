@@ -15,6 +15,10 @@ ingest → domain_map → layer_analysis (×5 parallel) → draft_opportunities 
        → score (LLM proposes, code validates) → rank + strategic filters → publish
 ```
 
+Opportunities still below the 7.5 critic threshold after the final refinement
+round are retained with their critique history and an exclusion reason, but are
+not published as briefs.
+
 - **Any document format** — md, txt, pdf, docx, xlsx, pptx, csv, json, yaml, html —
   through a plugin reader registry you can extend without touching this package.
 - **Citable evidence** — every input becomes numbered chunks (`[S12] claims.pdf p.4`);

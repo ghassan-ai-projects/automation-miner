@@ -88,5 +88,6 @@ def test_critic_and_refiner_receive_evidence_and_constraints() -> None:
     critic_prompts = [prompt for role, prompt in model.prompts if role == "critic"]
     refiner_prompts = [prompt for role, prompt in model.prompts if role == "refiner"]
     assert all("100 cases/day" in prompt for prompt in critic_prompts)
+    assert all("no custom dev" in prompt for prompt in critic_prompts)
     assert "100 cases/day" in refiner_prompts[0]
     assert "no custom dev" in refiner_prompts[0]

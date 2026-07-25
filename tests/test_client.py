@@ -41,7 +41,7 @@ def _client(responses: list[str]) -> tuple[MinerModel, list[dict]]:
         )
 
     http = httpx.Client(transport=httpx.MockTransport(handler))
-    return MinerModel(_config(), http_client=http), sent
+    return MinerModel(_config(), http_client=http, sleep=lambda _: None), sent
 
 
 @pytest.fixture(autouse=True)
@@ -56,6 +56,12 @@ def test_valid_json_first_try() -> None:
     out = client.call_json("mapper", "sys", "prompt", _Out)
     assert out == _Out(name="a", value=1)
     assert len(sent) == 1
+    structured_prompt = sent[0]["messages"][-1]["content"]
+    assert "exact JSON Schema" in structured_prompt
+    assert '"name"' in structured_prompt
+    assert '"value"' in structured_prompt
+    assert '"type": "integer"' in structured_prompt
+    assert "Do not add fields that the schema does not define." in structured_prompt
 
 
 def test_fenced_json_is_extracted() -> None:
@@ -101,12 +107,19 @@ def test_non_object_json_retries() -> None:
     assert len(sent) == 2
 
 
+def test_empty_provider_content_retries() -> None:
+    client, sent = _client(["", '{"name": "valid", "value": 5}'])
+    assert client.call_json("mapper", "sys", "prompt", _Out).value == 5
+    assert len(sent) == 2
+    assert client.usage.snapshot().retries == 1
+
+
 def test_malformed_provider_envelope_raises_runtime_error() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json={"choices": [{"unexpected": True}]})
 
     http = httpx.Client(transport=httpx.MockTransport(handler))
-    client = MinerModel(_config(), http_client=http)
+    client = MinerModel(_config(), http_client=http, sleep=lambda _: None)
     with pytest.raises(RuntimeError, match="malformed choice"):
         client.call_json("mapper", "sys", "prompt", _Out)
 

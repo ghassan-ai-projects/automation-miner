@@ -43,10 +43,21 @@ MAX_JSON_ATTEMPTS = 3
 # Statuses worth retrying: rate limits, timeouts, and transient upstream faults.
 RETRYABLE_STATUS = frozenset({408, 409, 425, 429, 500, 502, 503, 504, 529})
 
-_JSON_INSTRUCTION = (
-    "\n\nRespond with a single JSON object matching the requested schema. "
-    "No markdown fences, no prose."
-)
+def _schema_instruction(schema: type[BaseModel]) -> str:
+    """Render the authoritative structured-output contract for a model call.
+
+    Role prompts explain the task, but they are not a reliable substitute for
+    the Pydantic contract enforced after the response. Supplying that contract
+    here keeps every role aligned with the validator, including future schemas.
+    """
+    json_schema = json.dumps(schema.model_json_schema(), indent=2, ensure_ascii=False)
+    return (
+        "\n\nReturn one JSON object that validates against this exact JSON Schema:\n"
+        f"{json_schema}\n\n"
+        "Obey every required field, type, enum, array bound, and nested object "
+        "shape. Do not add fields that the schema does not define. "
+        "Return JSON only: no markdown fences or prose."
+    )
 
 
 class UsageTracker:
@@ -145,7 +156,7 @@ class MinerModel:
         or parse error to the prompt so the model can self-correct.
         """
         route = self.config.resolve(role, dry_run=self.dry_run)
-        full_prompt = prompt + _JSON_INSTRUCTION
+        full_prompt = prompt + _schema_instruction(schema)
         last_error = ""
         for attempt in range(1, MAX_JSON_ATTEMPTS + 1):
             if route.provider == "mock":
@@ -246,7 +257,30 @@ class MinerModel:
                 retries += 1
                 continue
 
-            content, usage = _parse_completion(response, route.provider)
+            try:
+                content, usage = _parse_completion(response, route.provider)
+            except RuntimeError as exc:
+                # A provider can return HTTP 200 before an upstream generation
+                # fails, yielding no choices, empty content, or a malformed
+                # envelope. These failures are transient in the same way as a
+                # 5xx and are safe to retry because model calls have no side
+                # effects.
+                last_error = exc
+                if attempt == policy.attempts:
+                    self.usage.record(
+                        role,
+                        seconds=time.monotonic() - started,
+                        retries=retries,
+                        failures=1,
+                    )
+                    raise RuntimeError(
+                        f"Completion failed for role {role!r} using "
+                        f"{route.provider!r}/{route.model!r} after "
+                        f"{policy.attempts} attempts: {exc}"
+                    ) from exc
+                self._sleep(_retry_delay(policy, attempt, None))
+                retries += 1
+                continue
             prompt_tokens = usage.get("prompt_tokens")
             completion_tokens = usage.get("completion_tokens")
             exact = prompt_tokens is not None and completion_tokens is not None

@@ -33,6 +33,7 @@ from dataclasses import dataclass
 from typing import Iterable
 
 from automation_miner.schemas import (
+    CRITIQUE_THRESHOLD,
     Eligibility,
     ICEScore,
     Layer,
@@ -62,6 +63,8 @@ class ConstraintPolicy:
     urgent: bool = False
     no_infrastructure: bool = False
     mature_stack: bool = False
+    eu_data_residency: bool = False
+    human_payment_approval: bool = False
     agent_limit: int | None = None
     raw: str = ""
 
@@ -74,6 +77,8 @@ class ConstraintPolicy:
             or self.urgent
             or self.no_infrastructure
             or self.mature_stack
+            or self.eu_data_residency
+            or self.human_payment_approval
             or self.agent_limit is not None
         )
 
@@ -96,6 +101,12 @@ class ConstraintPolicy:
             notes.append(
                 "existing mature stack: Communication, Decision and Monitoring layers only"
             )
+        if self.eu_data_residency:
+            notes.append(
+                "EU data residency: unverified external data channels are excluded"
+            )
+        if self.human_payment_approval:
+            notes.append("payments: explicit human approval is mandatory")
         if self.agent_limit is not None:
             notes.append(f"agent limit {self.agent_limit}: larger topologies excluded")
         return notes
@@ -126,6 +137,18 @@ def parse_constraint_policy(constraints: str) -> ConstraintPolicy:
         ),
         no_infrastructure="no existing infrastructure" in text or "no infrastructure" in text,
         mature_stack="existing mature stack" in text or "mature stack" in text,
+        eu_data_residency=bool(
+            re.search(r"\beu[- ](?:hosted|only)\b", text)
+            or re.search(r"\beu\s+data\s+residen", text)
+            or re.search(r"data.{0,30}(?:remain|stay).{0,15}\beu\b", text)
+        ),
+        human_payment_approval=bool(
+            "payment" in text
+            and (
+                "human approval" in text
+                or re.search(r"payment.{0,30}(?:must|require).{0,20}approv", text)
+            )
+        ),
         agent_limit=agent_limit,
         raw=constraints,
     )
@@ -258,6 +281,12 @@ def apply_constraint_overrides(
     if policy.low_budget:
         applied.append("budget low/zero: only existing-tool, config-level work eligible")
 
+    if policy.eu_data_residency:
+        applied.append("EU data residency: external data channels require verified EU hosting")
+
+    if policy.human_payment_approval:
+        applied.append("payments: explicit human approval required")
+
     return score, risk, applied
 
 
@@ -283,6 +312,12 @@ def active_filters(opp: Opportunity) -> list[str]:
 def _exclusions(opp: Opportunity, policy: ConstraintPolicy) -> list[str]:
     """Every reason this opportunity fails the hard portfolio constraints."""
     reasons: list[str] = []
+    if opp.critique_overall < CRITIQUE_THRESHOLD:
+        reasons.append(
+            f"critic score {opp.critique_overall:g} is below the "
+            f"{CRITIQUE_THRESHOLD:g} quality threshold after "
+            f"{opp.iterations} iteration{'s' if opp.iterations != 1 else ''}"
+        )
     if policy.low_budget and opp.score.ease < 4:
         reasons.append(f"budget low/zero requires Ease >= 4 (has {opp.score.ease})")
     if policy.no_coding and opp.score.ease < 4:
@@ -307,6 +342,51 @@ def _exclusions(opp: Opportunity, policy: ConstraintPolicy) -> list[str]:
         reasons.append(
             f"agent limit {policy.agent_limit} exceeded (needs {opp.draft.agent_count})"
         )
+    draft_text = " ".join(
+        [
+            opp.draft.proposed_automation,
+            *opp.draft.steps,
+            *opp.draft.outputs,
+            *opp.draft.technical_requirements,
+            *opp.draft.dependencies,
+        ]
+    ).casefold()
+    if policy.eu_data_residency:
+        external_channels = (
+            "email-to-sms",
+            "sms gateway",
+            "carrier gateway",
+            "twilio",
+        )
+        verified_eu_channel = bool(
+            re.search(
+                r"(?:verified|contracted|confirmed|approved)\s+eu[- ]hosted.{0,30}"
+                r"(?:sms|gateway|provider)",
+                draft_text,
+            )
+        )
+        proposed = next(
+            (channel for channel in external_channels if channel in draft_text),
+            "",
+        )
+        if proposed and not verified_eu_channel:
+            reasons.append(
+                "EU data residency excludes unverified external data channel "
+                f"{proposed!r}"
+            )
+    if policy.human_payment_approval:
+        hitl_text = " ".join(opp.draft.hitl_points).casefold()
+        if not (
+            ("payment" in hitl_text or "invoice" in hitl_text)
+            and re.search(r"\b(?:human|review|approv)", hitl_text)
+        ):
+            reasons.append("payments require an explicit human approval checkpoint")
+        if re.search(
+            r"\b(?:automat(?:e|ed|ically)|autonom(?:ous|ously))"
+            r".{0,30}\b(?:release|execute|send|initiate).{0,15}\bpayment",
+            draft_text,
+        ):
+            reasons.append("payments may not be released autonomously")
     return reasons
 
 

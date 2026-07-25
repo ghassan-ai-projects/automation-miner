@@ -43,7 +43,12 @@ def run_critique_loop(
         critique = model.call_json(
             "critic",
             CRITIC_SYSTEM,
-            critique_prompt(current.model_dump_json(), other_titles, evidence),
+            critique_prompt(
+                current.model_dump_json(),
+                other_titles,
+                evidence,
+                constraints,
+            ),
             Critique,
         )
         history.append(
