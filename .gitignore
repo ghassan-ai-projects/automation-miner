@@ -29,6 +29,7 @@ MANIFEST
 # docs/ — generated docs root; keep the implementation contract and source spec
 docs/*
 !docs/DESIGN.md
+!docs/IMPROVEMENT-PLAN.md
 !docs/spec/
 !docs/spec/**
 
