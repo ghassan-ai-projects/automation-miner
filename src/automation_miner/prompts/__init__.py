@@ -8,11 +8,25 @@ blocks and is asked to cite the ids it relied on, which turns the critic's
 highest-weighted dimension (``groundedness``, 25%) from an unverifiable judgement
 into something code can check: cited ids either exist in the run's evidence index
 or they do not.
+
+Version 2.1 adds the exact Pydantic JSON Schema to every structured model call,
+so role descriptions and the contracts enforced by code cannot drift apart.
+
+Version 2.2 makes absence handling explicit and gives the critic the same
+evidence protocol as generation roles. Source silence is unknown, not proof
+that a control, document, system, metric, or process does not exist.
+
+Version 2.3 repeats that rule at each task boundary and makes unsupported
+negative-existence claims a mandatory critic failure, after testing showed that
+a general system-level instruction alone was too easy for models to overlook.
+
+Version 2.4 sends run constraints to the critic and makes unresolved hard
+constraint conflicts a mandatory feasibility failure.
 """
 
 from __future__ import annotations
 
-PROMPT_VERSION = "2.0"
+PROMPT_VERSION = "2.4"
 
 # ---------------------------------------------------------------------------
 # Shared framework fragments
@@ -30,6 +44,52 @@ Evidence protocol:
   "evidence_refs". Cite only ids that actually appear above. When you must
   infer something the evidence does not state, say so in the text ("inferred:
   ...") and do not invent an id for it.
+
+  Absence of evidence is not evidence of absence. If the blocks do not mention
+  an SOP, control, system, metric, role, or process, call it unknown or not
+  provided. Do not claim it is missing, turn that silence into a pain point, or
+  cite a block as proof of non-existence. Label projections and improvement
+  targets explicitly as assumptions and show their basis.
+"""
+
+DOMAIN_MAP_EVIDENCE_PROTOCOL = """\
+Evidence protocol:
+  Evidence is supplied as numbered blocks. Ground every factual claim in the
+  supplied evidence. If you must infer something the evidence does not state,
+  say so in the relevant text ("inferred: ...").
+
+  Absence of evidence is not evidence of absence. If the blocks do not mention
+  an SOP, control, system, metric, role, or process, call it unknown or not
+  provided; never claim it is missing.
+
+  The DomainMap schema has no evidence_refs field. Do not return citations or
+  any field other than the fields in the output contract.
+"""
+
+DOMAIN_MAP_OUTPUT_CONTRACT = """\
+Output contract: return one JSON object and no markdown, prose, or extra keys.
+The object must contain exactly these fields:
+  - core_function: string
+  - stakeholders: array of strings (names only)
+  - stakeholder_processes: array of objects, each exactly {"stakeholder": string, "processes": array of strings}
+  - information_flow: string (a prose paragraph, not an array)
+  - decision_density: string
+  - compliance_surface: string
+  - technology_maturity: string
+  - scale_indicators: string (a prose paragraph, not an array)
+  - manual_friction: array of strings
+  - workflow_patterns: string (a prose paragraph, not an array)
+
+Do not include pain_points, evidence_refs, or any other fields.
+"""
+
+SOURCE_SILENCE_GATE = """\
+Evidence gate:
+  Use only claims directly supported by the supplied evidence. Framework signal
+  questions and fields omitted by the source are not facts. Omit a candidate
+  finding or pain point when its only basis is source silence. It is forbidden
+  to infer that something does not exist merely because the evidence does not
+  mention it, even if you label that claim "inferred".
 """
 
 FIVE_LAYER_FRAMEWORK = """\
@@ -136,7 +196,7 @@ manual friction, workflow patterns, and each stakeholder's concrete processes.
 Look for handoff points, translation points, approval gates, and reporting
 loops — classic automation targets.
 
-{EVIDENCE_PROTOCOL}
+{DOMAIN_MAP_EVIDENCE_PROTOCOL}
 
 {CONSTRAINT_RULES}
 """
@@ -176,6 +236,13 @@ the rubric and give actionable feedback. Be strict: generic filler, ungrounded
 claims, missing numbers, or evidence ids that do not support the claim they are
 attached to must lower the relevant dimension.
 
+Any step, tool, dependency, data flow, or autonomous action that conflicts with
+a stated hard constraint caps feasibility at 3.0 and must be removed before the
+draft can pass. Examples include external data transfer under an EU-only data
+residency rule and autonomous payment under mandatory human approval.
+
+{EVIDENCE_PROTOCOL}
+
 {CRITIC_RUBRIC}
 """
 
@@ -210,7 +277,7 @@ def domain_map_prompt(domain: str, constraints: str, evidence: str) -> str:
     return (
         f"Domain: {domain}\nConstraints: {constraints or 'none'}\n\n"
         f"Domain evidence:\n{evidence}\n\n"
-        "Produce the DomainMap JSON."
+        f"{DOMAIN_MAP_OUTPUT_CONTRACT}"
     )
 
 
@@ -218,6 +285,7 @@ def layer_analysis_prompt(layer: str, domain: str, constraints: str, evidence: s
     return (
         f"Layer: {layer}\nDomain: {domain}\nConstraints: {constraints or 'none'}\n\n"
         f"Evidence selected as most relevant to the {layer} layer:\n{evidence}\n\n"
+        f"{SOURCE_SILENCE_GATE}\n"
         f"Produce the LayerAnalysis JSON for the {layer} layer only, citing the "
         "evidence ids you used in evidence_refs."
     )
@@ -235,17 +303,34 @@ def draft_prompt(
         f"Domain map:\n{domain_map_json}\n\n"
         f"Layer analysis:\n{analysis_json}\n\n"
         f"Evidence:\n{evidence}\n\n"
+        f"{SOURCE_SILENCE_GATE}\n"
+        "Verify claims inherited from the domain map and layer analysis against "
+        "the evidence; omit any that fail this gate.\n\n"
         "Produce the DraftBatch JSON with 1-2 drafts for this layer, each citing "
         "evidence_refs."
     )
 
 
-def critique_prompt(draft_json: str, other_titles: list[str], evidence: str = "") -> str:
+def critique_prompt(
+    draft_json: str,
+    other_titles: list[str],
+    evidence: str = "",
+    constraints: str = "",
+) -> str:
     others = ", ".join(other_titles) or "none"
     return (
+        f"Hard constraints the draft must satisfy:\n{constraints or 'none'}\n\n"
         f"Other opportunities in this run (for differentiation): {others}\n\n"
         f"Evidence available for groundedness checks:\n{evidence}\n\n"
         f"Draft under review:\n{draft_json}\n\n"
+        "Mandatory grounding rule: a claim that an unmentioned thing does not "
+        "exist is invalid even when labeled as inferred. If the draft contains "
+        "such a source-silence claim, groundedness must be at most 3.0 and the "
+        "feedback must require its removal.\n\n"
+        "Mandatory constraint rule: if any proposed step, tool, dependency, "
+        "data flow, or autonomous action conflicts with a hard constraint, "
+        "feasibility must be at most 3.0 and the feedback must require removal "
+        "of the conflict.\n\n"
         "Produce the Critique JSON."
     )
 
@@ -260,6 +345,10 @@ def refine_prompt(
         f"Constraints: {constraints or 'none'}\n\n"
         f"Evidence:\n{evidence}\n\n"
         f"Current draft:\n{draft_json}\n\nCritique to address:\n{critique_json}\n\n"
+        f"{SOURCE_SILENCE_GATE}\n"
+        "Remove unsupported source-silence claims rather than relabeling them "
+        "as inferences. Remove or replace every element that conflicts with the "
+        "stated constraints; do not merely list the conflict as a risk.\n\n"
         "Produce the refined OpportunityDraft JSON."
     )
 

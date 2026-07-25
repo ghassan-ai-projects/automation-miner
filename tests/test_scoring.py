@@ -148,6 +148,15 @@ def test_policy_recognizes_urgency_spellings() -> None:
         assert parse_constraint_policy(text).urgent, text
 
 
+def test_policy_recognizes_data_residency_and_payment_approval() -> None:
+    policy = parse_constraint_policy(
+        "EU data residency; payments require human approval"
+    )
+    assert policy.eu_data_residency
+    assert policy.human_payment_approval
+    assert len(policy.describe()) == 2
+
+
 def test_every_active_policy_is_recorded_in_overrides() -> None:
     """The divergence bug: these reshaped the portfolio while recording nothing."""
     for text in ("budget: zero", "no budget", "agent_limit: 3", "team:3", "timeline: tight"):
@@ -278,6 +287,24 @@ def test_low_budget_policy_filters_low_ease_with_a_reason() -> None:
     assert "Ease >= 4" in excluded.exclusion_reasons[0]
 
 
+def test_below_threshold_critique_is_retained_but_not_published() -> None:
+    weak = make_opportunity("AM-001", 5, 5, 5).model_copy(
+        update={"critique_overall": 7.49, "iterations": 2}
+    )
+    strong = make_opportunity("AM-002", 3, 3, 3).model_copy(
+        update={"critique_overall": 7.5}
+    )
+
+    ranked = apply_portfolio_policy([weak, strong])
+
+    assert _ids(published(ranked)) == ["AM-002"]
+    excluded = filtered(ranked)[0]
+    assert excluded.am_id == "AM-001"
+    assert excluded.exclusion_reasons == [
+        "critic score 7.49 is below the 7.5 quality threshold after 2 iterations"
+    ]
+
+
 def test_infrastructure_policy_limits_layers() -> None:
     document = make_opportunity("AM-001", 3, 3, 3, layer=Layer.DOCUMENT)
     monitoring = make_opportunity("AM-002", 3, 3, 3, layer=Layer.MONITORING)
@@ -305,6 +332,56 @@ def test_agent_limit_uses_the_structured_count() -> None:
     ranked = apply_portfolio_policy([single, swarm], "agent limit: 1")
     assert _ids(published(ranked)) == ["AM-001"]
     assert "needs 3" in filtered(ranked)[0].exclusion_reasons[0]
+
+
+def test_eu_residency_filters_unverified_external_messaging() -> None:
+    unsafe = make_opportunity(
+        "AM-001",
+        3,
+        3,
+        4,
+        technical_requirements=["Carrier email-to-SMS gateway"],
+    )
+    safe = make_opportunity(
+        "AM-002",
+        3,
+        3,
+        4,
+        technical_requirements=["Microsoft Teams in the existing EU tenant"],
+    )
+
+    ranked = apply_portfolio_policy([unsafe, safe], "EU data residency")
+
+    assert _ids(published(ranked)) == ["AM-002"]
+    assert "email-to-sms" in filtered(ranked)[0].exclusion_reasons[0]
+
+
+def test_payment_policy_requires_hitl_and_rejects_autonomous_release() -> None:
+    safe = make_opportunity(
+        "AM-001",
+        3,
+        3,
+        4,
+        hitl_points=["Partner reviews and approves every invoice payment"],
+    )
+    no_checkpoint = make_opportunity("AM-002", 3, 3, 4)
+    autonomous = make_opportunity(
+        "AM-003",
+        3,
+        3,
+        4,
+        hitl_points=["Partner reviews and approves every invoice payment"],
+        steps=["Automatically release payment after validation"],
+    )
+
+    ranked = apply_portfolio_policy(
+        [safe, no_checkpoint, autonomous], "payments require human approval"
+    )
+
+    assert _ids(published(ranked)) == ["AM-001"]
+    reasons = {opp.am_id: opp.exclusion_reasons for opp in filtered(ranked)}
+    assert any("checkpoint" in reason for reason in reasons["AM-002"])
+    assert any("autonomously" in reason for reason in reasons["AM-003"])
 
 
 def test_multiple_exclusion_reasons_accumulate() -> None:
