@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from automation_miner.mcp.tools import TOOL_SCHEMAS, dispatch
@@ -52,6 +53,24 @@ def test_mine_domain_returns_the_summary_inline(workspace: Path) -> None:
     assert entry["tier"] and entry["ice"] and entry["problem"]
     assert entry["eligibility"] == "published"
     assert Path(entry["brief_path"]).is_file()
+
+
+def test_mine_domain_accepts_dynamic_constraint_params(workspace: Path) -> None:
+    resp = dispatch(
+        "mine_domain",
+        {
+            "input": "OpenClaw portfolio",
+            "constraint_params": {"agent": "openclaw", "max_agents": 1},
+            "mode": "strategy",
+            "dry_run": True,
+        },
+        workspace,
+    )
+    assert resp.success, resp.error
+    run = Path(resp.data["artifacts"]["run_dir"])
+    manifest = json.loads((run / "run.json").read_text())
+    assert manifest["constraint_params"] == {"agent": "openclaw", "max_agents": "1"}
+    assert manifest["analysis_mode"] == "strategy"
 
 
 def test_get_run_summary(workspace: Path) -> None:

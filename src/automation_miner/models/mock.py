@@ -16,15 +16,20 @@ import re
 from typing import Any
 
 _LAYER_RE = re.compile(r"^Layer:\s*(\w+)", re.MULTILINE)
+_JSON_LAYER_RE = re.compile(r'"layer"\s*:\s*"(\w+)"')
 _TARGET_RE = re.compile(r"approximately ([\d,]+) characters")
 _CONTENT_RE = re.compile(r"\nContent:\n(.*)\n\nWrite a dense digest", re.DOTALL)
 _REF_RE = re.compile(r"\[(S\d+)\]")
+_TITLE_RE = re.compile(r'"title"\s*:\s*"([^"]+)"')
+_IDEAS_RE = re.compile(r"^-\s*ideas\s*=\s*(\d+)\s*$", re.MULTILINE | re.IGNORECASE)
 
 _LAYERS = ("document", "communication", "decision", "monitoring", "knowledge")
 
 
 def _layer_from_prompt(prompt: str) -> str:
     match = _LAYER_RE.search(prompt)
+    if not match:
+        match = _JSON_LAYER_RE.search(prompt)
     if match and match.group(1).lower() in _LAYERS:
         return match.group(1).lower()
     return "document"
@@ -55,18 +60,21 @@ def digest(prompt: str) -> str:
     return head[: cut + 1] if cut > target // 2 else head
 
 
-def _domain_map() -> dict[str, Any]:
+def _domain_map(refs: list[str]) -> dict[str, Any]:
+    evidence_refs = refs[:1] or ["S1"]
     return {
+        "analysis_mode": "operational",
         "core_function": "Deliver the domain's core service through coordinated operational work.",
         "stakeholders": ["Operations team", "Customers", "Management", "Regulators"],
         "stakeholder_processes": [
             {
                 "stakeholder": "Operations team",
                 "processes": ["Intake", "Validation", "Service delivery", "Reporting"],
+                "evidence_refs": evidence_refs,
             },
-            {"stakeholder": "Customers", "processes": ["Request submission", "Review"]},
-            {"stakeholder": "Management", "processes": ["Approval", "Performance review"]},
-            {"stakeholder": "Regulators", "processes": ["Audit", "Compliance review"]},
+            {"stakeholder": "Customers", "processes": ["Request submission", "Review"], "evidence_refs": evidence_refs},
+            {"stakeholder": "Management", "processes": ["Approval", "Performance review"], "evidence_refs": evidence_refs},
+            {"stakeholder": "Regulators", "processes": ["Audit", "Compliance review"], "evidence_refs": evidence_refs},
         ],
         "information_flow": (
             "Documents, approvals, and status reports move between teams "
@@ -82,6 +90,13 @@ def _domain_map() -> dict[str, Any]:
             "Email-based status chasing",
         ],
         "workflow_patterns": "Weekly reporting cycle with a month-end crunch.",
+        "verified_current_state": [
+            {"claim": "Recurring operational work is described.", "evidence_refs": evidence_refs}
+        ],
+        "stated_gaps": [],
+        "proposed_initiatives": [],
+        "benchmarks": [],
+        "unknowns": [],
     }
 
 
@@ -101,8 +116,37 @@ def _layer_analysis(layer: str, refs: list[str]) -> dict[str, Any]:
     }
 
 
-def _draft(layer: str, refs: list[str]) -> dict[str, Any]:
-    title = f"Automated {layer.replace('_', ' ').title()} Workflow"
+def _candidate_portfolio(refs: list[str], prompt: str) -> dict[str, Any]:
+    count_match = _IDEAS_RE.search(prompt)
+    count = max(1, min(12, int(count_match.group(1)))) if count_match else 5
+    layers = [_LAYERS[index % len(_LAYERS)] for index in range(count)]
+    return {
+        "candidates": [
+            {
+                "layer": layer,
+                "title": f"High-Value {layer.title()} Opportunity {index + 1}",
+                "value_thesis": f"Create distinct value through the {layer} layer.",
+                "why_now": "The supplied evidence makes this timely.",
+                "differentiation": (
+                    f"Candidate {index + 1} focuses uniquely on {layer}, "
+                    "not generic documentation."
+                ),
+                "evidence_refs": refs,
+            }
+            for index, layer in enumerate(layers)
+        ]
+    }
+
+
+def _draft(layer: str, refs: list[str], prompt: str = "") -> dict[str, Any]:
+    title_match = _TITLE_RE.search(prompt)
+    title = (
+        title_match.group(1)
+        if title_match
+        else f"Automated {layer.replace('_', ' ').title()} Workflow"
+    )
+    openclaw = "agent = openclaw" in prompt.casefold()
+    agent_label = "An OpenClaw agent" if openclaw else "An agent"
     return {
         "layer": layer,
         "title": title,
@@ -112,7 +156,7 @@ def _draft(layer: str, refs: list[str]) -> dict[str, Any]:
             "hours per week and causing avoidable errors."
         ),
         "proposed_automation": (
-            f"An agent that watches the {layer} inputs, applies the domain rules, "
+            f"{agent_label} that watches the {layer} inputs, applies the domain rules, "
             "produces the standard output artifact, and routes exceptions to a human."
         ),
         "inputs": [
@@ -136,6 +180,7 @@ def _draft(layer: str, refs: list[str]) -> dict[str, Any]:
             "Weekly sampling of automated outputs",
         ],
         "technical_requirements": [
+            *(["OpenClaw agent runtime"] if openclaw else []),
             "API access to the primary system of record",
             "LLM with tool calling",
             "Persistent storage for logs and outputs",
@@ -153,12 +198,16 @@ def _draft(layer: str, refs: list[str]) -> dict[str, Any]:
                 "current": "5 hours/week manual handling",
                 "automated": "30 minutes/week review",
                 "improvement": "90%",
+                "basis": "Assumption to validate during discovery",
+                "assumption": True,
             },
             {
                 "dimension": "Error rate",
                 "current": "~5% rework",
                 "automated": "<1% with validation",
                 "improvement": "80%",
+                "basis": "Assumption to validate during discovery",
+                "assumption": True,
             },
         ],
         "implementation": {
@@ -195,6 +244,8 @@ def _draft(layer: str, refs: list[str]) -> dict[str, Any]:
         "impact_estimate": "high",
         "risk_level": "medium",
         "evidence_refs": refs,
+        "assumptions": ["Current effort and error-rate baselines require validation."],
+        "validation_questions": ["What are the measured weekly effort and rework rate?"],
     }
 
 
@@ -206,6 +257,8 @@ def _critique() -> dict[str, Any]:
         "feasibility": 8,
         "hitl_clarity": 8,
         "differentiation": 8,
+        "grounding_violations": [],
+        "constraint_violations": [],
         "feedback": "Draft is grounded, specific, and quantified. Approved.",
     }
 
@@ -227,14 +280,25 @@ def call_json(role: str, schema_name: str, prompt: str) -> dict[str, Any]:
     """Return canned valid JSON for a role + schema pair."""
     layer = _layer_from_prompt(prompt)
     refs = _refs_from_prompt(prompt)
+    if schema_name == "InputAssessment":
+        return {
+            "recommended_mode": "operational",
+            "source_type": "operational evidence",
+            "rationale": "The source describes recurring work.",
+            "operational_evidence_refs": refs,
+            "strategic_evidence_refs": [],
+            "evidence_gaps": [],
+        }
     if schema_name == "DomainMap":
-        return _domain_map()
+        return _domain_map(refs)
+    if schema_name == "CandidatePortfolio":
+        return _candidate_portfolio(refs, prompt)
     if schema_name == "LayerAnalysis":
         return _layer_analysis(layer, refs)
     if schema_name == "DraftBatch":
-        return {"drafts": [_draft(layer, refs)]}
+        return {"drafts": [_draft(layer, refs, prompt)]}
     if schema_name == "OpportunityDraft":
-        return _draft(layer, refs)
+        return _draft(layer, refs, prompt)
     if schema_name == "Critique":
         return _critique()
     if schema_name == "ICEScore":

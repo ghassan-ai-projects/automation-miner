@@ -28,6 +28,14 @@ class Layer(StrEnum):
     KNOWLEDGE = "knowledge"
 
 
+class AnalysisMode(StrEnum):
+    """How evidence should be interpreted before opportunities are generated."""
+
+    AUTO = "auto"
+    OPERATIONAL = "operational"
+    STRATEGY = "strategy"
+
+
 LAYER_ORDER: list[Layer] = list(Layer)
 
 LAYER_TITLES: dict[Layer, str] = {
@@ -168,6 +176,7 @@ class ContextPacket(ArtifactModel):
     domain: str
     domain_slug: str
     constraints: str = ""
+    constraint_params: dict[str, str] = Field(default_factory=dict)
     source_kind: Literal["idea", "file", "kb"]
     overview: str
     chunks: list[Chunk] = Field(default_factory=list)
@@ -185,16 +194,36 @@ class ContextPacket(ArtifactModel):
 # ---------------------------------------------------------------------------
 
 
+class EvidenceClaim(ArtifactModel):
+    """A claim with source locations that directly support it."""
+
+    claim: str
+    evidence_refs: list[str] = Field(min_length=1)
+
+
+class InputAssessment(ArtifactModel):
+    """Preflight classification that prevents using the wrong analysis framework."""
+
+    recommended_mode: Literal["operational", "strategy"]
+    source_type: str
+    rationale: str
+    operational_evidence_refs: list[str] = Field(default_factory=list)
+    strategic_evidence_refs: list[str] = Field(default_factory=list)
+    evidence_gaps: list[str] = Field(default_factory=list)
+
+
 class StakeholderProcess(ArtifactModel):
     """One stakeholder and the domain processes they own or participate in."""
 
     stakeholder: str
     processes: list[str] = Field(min_length=1)
+    evidence_refs: list[str]
 
 
 class DomainMap(ArtifactModel):
     """Phase 1 output: structured model of the domain."""
 
+    analysis_mode: Literal["operational", "strategy"]
     core_function: str
     stakeholders: list[str]
     stakeholder_processes: list[StakeholderProcess]
@@ -205,6 +234,35 @@ class DomainMap(ArtifactModel):
     scale_indicators: str
     manual_friction: list[str]
     workflow_patterns: str
+    verified_current_state: list[EvidenceClaim]
+    stated_gaps: list[EvidenceClaim]
+    proposed_initiatives: list[EvidenceClaim]
+    benchmarks: list[EvidenceClaim]
+    unknowns: list[str]
+
+
+class OpportunityCandidate(ArtifactModel):
+    """Portfolio-level idea selected before independent briefs are drafted."""
+
+    layer: Layer
+    title: str
+    value_thesis: str
+    why_now: str
+    differentiation: str
+    evidence_refs: list[str] = Field(default_factory=list)
+
+
+class CandidatePortfolio(ArtifactModel):
+    """A deliberately diverse set of high-value candidates for one run."""
+
+    candidates: list[OpportunityCandidate] = Field(min_length=1, max_length=12)
+
+    @model_validator(mode="after")
+    def unique_titles(self) -> CandidatePortfolio:
+        normalized = [candidate.title.casefold().strip() for candidate in self.candidates]
+        if len(normalized) != len(set(normalized)):
+            raise ValueError("candidate titles must be unique")
+        return self
 
 
 class LayerAnalysis(ArtifactModel):
@@ -229,6 +287,8 @@ class ImpactRow(ArtifactModel):
     current: str
     automated: str
     improvement: str
+    basis: str
+    assumption: bool
 
 
 class PhasePlan(ArtifactModel):
@@ -262,6 +322,8 @@ class OpportunityDraft(ArtifactModel):
     impact_estimate: Level
     risk_level: Level
     evidence_refs: list[str] = Field(default_factory=list)
+    assumptions: list[str]
+    validation_questions: list[str]
 
 
 class DraftBatch(ArtifactModel):
@@ -280,6 +342,9 @@ CRITIQUE_WEIGHTS: dict[str, float] = {
     "differentiation": 0.10,
 }
 CRITIQUE_THRESHOLD = 7.5
+# Inspiration remains visible below the aspirational refinement target. Only
+# materially weak drafts and hard semantic/constraint violations are filtered.
+PUBLICATION_QUALITY_FLOOR = 6.0
 
 
 class Critique(ArtifactModel):
@@ -291,6 +356,8 @@ class Critique(ArtifactModel):
     feasibility: float = Field(ge=0, le=10)
     hitl_clarity: float = Field(ge=0, le=10)
     differentiation: float = Field(ge=0, le=10)
+    grounding_violations: list[str]
+    constraint_violations: list[str]
     feedback: str
 
     @property
@@ -302,7 +369,18 @@ class Critique(ArtifactModel):
 
     @property
     def passed(self) -> bool:
-        return self.overall >= CRITIQUE_THRESHOLD
+        return (
+            self.overall >= CRITIQUE_THRESHOLD
+            and not self.grounding_violations
+            and not self.constraint_violations
+        )
+
+    @property
+    def gate_reasons(self) -> list[str]:
+        """Deterministic publication blockers reported through structured fields."""
+        reasons = [f"grounding: {issue}" for issue in self.grounding_violations]
+        reasons += [f"constraint: {issue}" for issue in self.constraint_violations]
+        return reasons
 
 
 # ---------------------------------------------------------------------------
@@ -348,6 +426,7 @@ class Opportunity(ArtifactModel):
     overrides_applied: list[str] = Field(default_factory=list)
     calibration: list[str] = Field(default_factory=list)
     unresolved_refs: list[str] = Field(default_factory=list)
+    quality_gate_reasons: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def validate_derived_fields(self) -> Opportunity:
@@ -460,8 +539,10 @@ class RunManifest(ArtifactModel):
     domain: str
     domain_slug: str
     constraints: str
+    constraint_params: dict[str, str] = Field(default_factory=dict)
     source_kind: Literal["idea", "file", "kb"]
     source_value: str = Field(min_length=1)
+    analysis_mode: Literal["operational", "strategy"]
     created: str
     finished: str = ""
     duration_seconds: float = Field(default=0.0, ge=0)

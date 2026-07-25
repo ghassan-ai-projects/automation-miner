@@ -102,7 +102,7 @@ class JsonReader(BaseReader):
             return [Segment(text=text, locator="raw (no parseable JSON lines)")]
         return _segments_for(records, "records")
 
-    def meta(self, path: Path, data: bytes, segments: list[Segment]) -> dict[str, str | int]:
+    def meta(self, path: Path, data: bytes, segments: list[Segment]) -> dict[str, str | int | float | bool]:
         info = super().meta(path, data, segments)
         if getattr(self, "_parse_error", ""):
             info["parse_error"] = self._parse_error
@@ -133,7 +133,7 @@ class YamlReader(BaseReader):
             segments += _segments_for(document, f"{path.name} doc {index}")
         return segments
 
-    def meta(self, path: Path, data: bytes, segments: list[Segment]) -> dict[str, str | int]:
+    def meta(self, path: Path, data: bytes, segments: list[Segment]) -> dict[str, str | int | float | bool]:
         info = super().meta(path, data, segments)
         if getattr(self, "_parse_error", ""):
             info["parse_error"] = self._parse_error

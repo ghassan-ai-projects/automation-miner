@@ -20,13 +20,16 @@ Version 2.3 repeats that rule at each task boundary and makes unsupported
 negative-existence claims a mandatory critic failure, after testing showed that
 a general system-level instruction alone was too easy for models to overlook.
 
-Version 2.4 sends run constraints to the critic and makes unresolved hard
-constraint conflicts a mandatory feasibility failure.
+Version 3.1 adds an input preflight, explicit operational/strategy modes,
+epistemic claim categories, structured quality-gate violations, and
+assumption-backed impact estimates. A portfolio planner now selects a diverse,
+high-value candidate set before parallel drafting, with dynamic constraint
+parameters treated as binding behavior rather than a fixed keyword list.
 """
 
 from __future__ import annotations
 
-PROMPT_VERSION = "2.4"
+PROMPT_VERSION = "3.1"
 
 # ---------------------------------------------------------------------------
 # Shared framework fragments
@@ -62,16 +65,19 @@ Evidence protocol:
   an SOP, control, system, metric, role, or process, call it unknown or not
   provided; never claim it is missing.
 
-  The DomainMap schema has no evidence_refs field. Do not return citations or
-  any field other than the fields in the output contract.
+  Classify claims by epistemic status. A recommendation is a proposed initiative,
+  not proof of the current state or a stated gap. A market example is a benchmark,
+  not proof that the subject organization has that capability. Cite supporting
+  evidence ids on every categorized claim.
 """
 
 DOMAIN_MAP_OUTPUT_CONTRACT = """\
 Output contract: return one JSON object and no markdown, prose, or extra keys.
 The object must contain exactly these fields:
+  - analysis_mode: "operational" or "strategy" (match the selected mode)
   - core_function: string
   - stakeholders: array of strings (names only)
-  - stakeholder_processes: array of objects, each exactly {"stakeholder": string, "processes": array of strings}
+  - stakeholder_processes: array of objects, each exactly {"stakeholder": string, "processes": array of strings, "evidence_refs": array of strings}
   - information_flow: string (a prose paragraph, not an array)
   - decision_density: string
   - compliance_surface: string
@@ -79,8 +85,15 @@ The object must contain exactly these fields:
   - scale_indicators: string (a prose paragraph, not an array)
   - manual_friction: array of strings
   - workflow_patterns: string (a prose paragraph, not an array)
+  - verified_current_state: array of {"claim": string, "evidence_refs": array of strings}
+  - stated_gaps: array of {"claim": string, "evidence_refs": array of strings}
+  - proposed_initiatives: array of {"claim": string, "evidence_refs": array of strings}
+  - benchmarks: array of {"claim": string, "evidence_refs": array of strings}
+  - unknowns: array of strings
 
-Do not include pain_points, evidence_refs, or any other fields.
+For narrative fields, state "unknown from supplied evidence" when necessary.
+Manual friction may contain only directly observed or explicitly stated friction.
+Do not include pain_points or any other fields.
 """
 
 SOURCE_SILENCE_GATE = """\
@@ -166,6 +179,12 @@ Critic rubric (score each 0-10, weighted):
   hitl_clarity      10% — explicit human review points and escalation
   differentiation   10% — not a duplicate of another opportunity in the same run
 Pass threshold: 7.5 weighted.
+
+Hard gates enforced by code:
+  - grounding_violations must list every unsupported current-state, absence,
+    system/tool, volume, baseline, or causal claim.
+  - constraint_violations must list every unresolved hard-constraint conflict.
+  - Any violation prevents publication regardless of the weighted score.
 """
 
 AGENT_TOPOLOGY_RULES = """\
@@ -201,6 +220,21 @@ loops — classic automation targets.
 {CONSTRAINT_RULES}
 """
 
+INPUT_ASSESSMENT_SYSTEM = f"""\
+You are the evidence preflight role of an automation-discovery engine.
+Classify the supplied material before analysis.
+
+Choose operational when the evidence describes actual workflows, owners,
+systems, handoffs, volumes, durations, errors, controls, or recurring work.
+Choose strategy when it primarily describes markets, capabilities, roadmaps,
+recommendations, target states, investment themes, or competitor examples.
+A strategy document does not become operational evidence merely because it
+mentions possible use cases. When mixed, choose operational only if there is
+enough current-state evidence to ground implementation briefs.
+
+{EVIDENCE_PROTOCOL}
+"""
+
 LAYER_ANALYST_SYSTEM = f"""\
 You are a layer-analyst role of an automation-discovery engine (Phase 2).
 Analyze the domain through ONE assigned layer only.
@@ -221,6 +255,13 @@ risk estimates, quantified impact with assumptions, a phased implementation
 path (MVP 1-2 weeks, expansion 2-4 weeks, autonomy 4-8 weeks), and risks with
 mitigations.
 
+In strategy mode, produce opportunity hypotheses rather than pretending a
+current workflow has been observed. Put every unverified premise in
+"assumptions" and ask concrete discovery questions in "validation_questions".
+Do not name a current or required product unless the evidence or constraints
+name it. Every impact row must say whether it is an assumption and explain its
+basis; unknown baselines must remain unknown.
+
 {EVIDENCE_PROTOCOL}
 
 {AGENT_TOPOLOGY_RULES}
@@ -228,6 +269,33 @@ mitigations.
 {ICE_DEFINITIONS}
 
 {CONSTRAINT_RULES}
+"""
+
+PORTFOLIO_PLANNER_SYSTEM = f"""\
+You are the portfolio-planning role of an automation opportunity engine.
+Select a coherent portfolio of 5-8 high-value, meaningfully different ideas
+before detailed briefs are drafted.
+
+Optimize for useful inspiration, not exhaustive coverage or rigid layer quotas.
+Do not produce several variants of documentation search, copilots, dashboards,
+or reporting. Each candidate must solve a different valuable problem, serve a
+different decision or workflow, or use a materially different leverage point.
+Use all five layer analyses as signals, but include multiple ideas from one layer
+when value warrants it and omit weak layers.
+
+Compare candidates against prior published ideas and every other candidate in
+this portfolio. State the differentiation explicitly. Treat every free-form
+constraint and constraint parameter as binding. For example, ``agent=openclaw``
+means every candidate must be implementable specifically as an OpenClaw agent,
+not merely mention OpenClaw as an optional tool. A parameter such as ``ideas=3``
+overrides the default portfolio size. Return between 1 and 12 candidates.
+
+Strategy inputs may inspire hypotheses. Keep recommendations, benchmarks, and
+unverified possibilities distinct from observed current-state facts.
+
+{EVIDENCE_PROTOCOL}
+
+{ICE_DEFINITIONS}
 """
 
 CRITIC_SYSTEM = f"""\
@@ -273,19 +341,46 @@ also be Impact 5. Code cross-checks this and will record any adjustment.
 # ---------------------------------------------------------------------------
 
 
-def domain_map_prompt(domain: str, constraints: str, evidence: str) -> str:
+def input_assessment_prompt(evidence: str, requested_mode: str = "auto") -> str:
     return (
-        f"Domain: {domain}\nConstraints: {constraints or 'none'}\n\n"
+        f"Requested mode: {requested_mode}\n\nEvidence:\n{evidence}\n\n"
+        "Produce the InputAssessment JSON. The requested mode is operator intent; "
+        "still report the evidence-based recommended_mode honestly."
+    )
+
+
+def domain_map_prompt(
+    domain: str,
+    constraints: str,
+    evidence: str,
+    mode: str = "operational",
+    assessment_json: str = "",
+) -> str:
+    return (
+        f"Domain: {domain}\nSelected analysis mode: {mode}\n"
+        f"Constraints: {constraints or 'none'}\n\n"
+        f"Input assessment:\n{assessment_json}\n\n"
         f"Domain evidence:\n{evidence}\n\n"
         f"{DOMAIN_MAP_OUTPUT_CONTRACT}"
     )
 
 
-def layer_analysis_prompt(layer: str, domain: str, constraints: str, evidence: str) -> str:
+def layer_analysis_prompt(
+    layer: str, domain: str, constraints: str, evidence: str, mode: str = "operational"
+) -> str:
     return (
-        f"Layer: {layer}\nDomain: {domain}\nConstraints: {constraints or 'none'}\n\n"
+        f"Layer: {layer}\nDomain: {domain}\nAnalysis mode: {mode}\n"
+        f"Constraints: {constraints or 'none'}\n\n"
         f"Evidence selected as most relevant to the {layer} layer:\n{evidence}\n\n"
         f"{SOURCE_SILENCE_GATE}\n"
+        + (
+            "Strategy-mode rule: distinguish current capabilities, explicit gaps, "
+            "proposed initiatives, and external benchmarks. Pain points require an "
+            "explicitly stated current gap; otherwise record a finding, not pain.\n"
+            if mode == "strategy"
+            else ""
+        )
+        +
         f"Produce the LayerAnalysis JSON for the {layer} layer only, citing the "
         "evidence ids you used in evidence_refs."
     )
@@ -297,17 +392,75 @@ def draft_prompt(
     evidence: str,
     constraints: str = "",
     domain_map_json: str = "",
+    mode: str = "operational",
 ) -> str:
     return (
-        f"Layer: {layer}\nConstraints: {constraints or 'none'}\n\n"
+        f"Layer: {layer}\nAnalysis mode: {mode}\n"
+        f"Constraints: {constraints or 'none'}\n\n"
         f"Domain map:\n{domain_map_json}\n\n"
         f"Layer analysis:\n{analysis_json}\n\n"
         f"Evidence:\n{evidence}\n\n"
         f"{SOURCE_SILENCE_GATE}\n"
         "Verify claims inherited from the domain map and layer analysis against "
         "the evidence; omit any that fail this gate.\n\n"
+        + (
+            "Frame drafts as hypotheses to validate. Do not invent an as-is "
+            "workflow, current tool stack, baseline, or savings figure. Put "
+            "unverified premises in assumptions and validation_questions.\n\n"
+            if mode == "strategy"
+            else ""
+        )
+        +
         "Produce the DraftBatch JSON with 1-2 drafts for this layer, each citing "
         "evidence_refs."
+    )
+
+
+def portfolio_plan_prompt(
+    domain_map_json: str,
+    analyses_json: str,
+    evidence: str,
+    constraints: str = "",
+    prior_ideas_json: str = "[]",
+) -> str:
+    return (
+        f"Constraints:\n{constraints or 'none'}\n\n"
+        f"Domain map:\n{domain_map_json}\n\n"
+        f"All layer analyses:\n{analyses_json}\n\n"
+        f"Prior published ideas to avoid repeating:\n{prior_ideas_json}\n\n"
+        f"Evidence:\n{evidence}\n\n"
+        "Produce the CandidatePortfolio JSON. Select for expected value, novelty, "
+        "constraint fit, and portfolio diversity. Candidate titles must be unique."
+    )
+
+
+def candidate_draft_prompt(
+    candidate_json: str,
+    portfolio_json: str,
+    evidence: str,
+    constraints: str = "",
+    domain_map_json: str = "",
+    mode: str = "operational",
+) -> str:
+    return (
+        f"Analysis mode: {mode}\nConstraints:\n{constraints or 'none'}\n\n"
+        f"Selected candidate:\n{candidate_json}\n\n"
+        f"Complete planned portfolio (preserve differentiation):\n{portfolio_json}\n\n"
+        f"Domain map:\n{domain_map_json}\n\n"
+        f"Evidence:\n{evidence}\n\n"
+        f"{SOURCE_SILENCE_GATE}\n"
+        "Draft only the selected candidate. Preserve its value thesis and explicit "
+        "differentiation from the other planned ideas. Every dynamic constraint "
+        "parameter is binding on the architecture, steps, requirements, and risks. "
+        "Do not collapse the candidate into a generic documentation or search idea.\n\n"
+        + (
+            "This is inspiration from strategic evidence: frame uncertain operating "
+            "details as assumptions and validation questions, while still proposing "
+            "a concrete and ambitious implementation path.\n\n"
+            if mode == "strategy"
+            else ""
+        )
+        + "Produce one complete OpportunityDraft JSON."
     )
 
 
@@ -327,10 +480,15 @@ def critique_prompt(
         "exist is invalid even when labeled as inferred. If the draft contains "
         "such a source-silence claim, groundedness must be at most 3.0 and the "
         "feedback must require its removal.\n\n"
+        "List each unsupported claim in grounding_violations. This includes "
+        "invented current tools, volumes, durations, costs, baselines, absence "
+        "claims, and projections presented as facts. Do not reward invented names "
+        "or numbers as specificity. Explicit assumptions with a stated basis are "
+        "allowed, but an assumption cannot establish the current state.\n\n"
         "Mandatory constraint rule: if any proposed step, tool, dependency, "
         "data flow, or autonomous action conflicts with a hard constraint, "
         "feasibility must be at most 3.0 and the feedback must require removal "
-        "of the conflict.\n\n"
+        "of the conflict. List every conflict in constraint_violations.\n\n"
         "Produce the Critique JSON."
     )
 

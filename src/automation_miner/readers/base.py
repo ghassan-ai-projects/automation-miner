@@ -65,7 +65,7 @@ class SourceDocument(ArtifactModel):
     media_type: MediaType
     segments: list[Segment] = Field(default_factory=list)
     encoding: str = ""
-    meta: dict[str, str | int] = Field(default_factory=dict)
+    meta: dict[str, str | int | float | bool] = Field(default_factory=dict)
 
     @property
     def name(self) -> str:
@@ -169,7 +169,9 @@ class BaseReader:
             meta=self.meta(path, data, segments),
         )
 
-    def meta(self, path: Path, data: bytes, segments: list[Segment]) -> dict[str, str | int]:
+    def meta(
+        self, path: Path, data: bytes, segments: list[Segment]
+    ) -> dict[str, str | int | float | bool]:
         return {"bytes": len(data), "segments": len(segments)}
 
     def option(self, key: str, default: int) -> int:

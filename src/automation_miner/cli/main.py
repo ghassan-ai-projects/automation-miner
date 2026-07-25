@@ -11,6 +11,7 @@ from typing import Any
 from automation_miner import __version__
 from automation_miner.artifacts.registry import reindex
 from automation_miner.artifacts.workspace import Workspace, default_workspace, read_json
+from automation_miner.constraints import parse_constraint_args
 
 
 def _workspace_arg(parser: argparse.ArgumentParser) -> None:
@@ -48,8 +49,22 @@ def _build_parser() -> argparse.ArgumentParser:
     mine.add_argument("--file", type=Path, help="Brief file (any registered format).")
     mine.add_argument("--kb", type=Path, help="Knowledge-base folder.")
     mine.add_argument("--constraints", default="", help="Free-form constraints string.")
+    mine.add_argument(
+        "--constraint",
+        dest="constraint_params",
+        action="append",
+        default=[],
+        metavar="KEY=VALUE",
+        help="Repeatable dynamic constraint parameter, e.g. --constraint agent=openclaw.",
+    )
     mine.add_argument("--iterations", type=int, default=2, help="Max critique rounds.")
     mine.add_argument("--profile", default="default", help="miner.toml profile.")
+    mine.add_argument(
+        "--mode",
+        choices=("auto", "operational", "strategy"),
+        default="auto",
+        help="Evidence interpretation mode. Default: auto-classify.",
+    )
     mine.add_argument(
         "--dry-run",
         action="store_true",
@@ -96,6 +111,11 @@ def _cmd_mine(args: argparse.Namespace) -> int:
     if args.idea is None and args.file is None and args.kb is None:
         print("error: provide an idea, --file, or --kb", file=sys.stderr)
         return 2
+    try:
+        constraint_params = parse_constraint_args(args.constraint_params)
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
     result = run_mine(
         workspace_path=_resolve_workspace(args),
         idea=args.idea,
@@ -105,6 +125,8 @@ def _cmd_mine(args: argparse.Namespace) -> int:
         max_iterations=args.iterations,
         profile=args.profile,
         dry_run=args.dry_run,
+        mode=args.mode,
+        constraint_params=constraint_params,
     )
     summary_path = result.get("summary_path", "")
     summary: dict[str, Any] = {}

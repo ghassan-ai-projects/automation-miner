@@ -344,6 +344,7 @@ def render_run_md(
     live = published(ranked)
     date = run_id.split("_", 1)[0]
     dm_rows = [
+        ("Analysis mode", domain_map.analysis_mode),
         ("Core function", domain_map.core_function),
         ("Key stakeholders", ", ".join(domain_map.stakeholders)),
         ("Information flow", domain_map.information_flow),
@@ -353,6 +354,12 @@ def render_run_md(
         ("Scale indicators", domain_map.scale_indicators),
         ("Manual friction points", "; ".join(domain_map.manual_friction)),
         ("Workflow patterns", domain_map.workflow_patterns),
+        (
+            "Proposed initiatives",
+            "; ".join(claim.claim for claim in domain_map.proposed_initiatives)
+            or "(none evidenced)",
+        ),
+        ("Unknowns", "; ".join(domain_map.unknowns) or "(none recorded)"),
     ]
     lines = [
         f"# Automation Mining Run — {date}",

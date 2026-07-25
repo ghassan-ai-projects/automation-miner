@@ -8,6 +8,7 @@ from pydantic import ValidationError
 
 from automation_miner.schemas import (
     CRITIQUE_THRESHOLD,
+    CandidatePortfolio,
     Chunk,
     ContextPacket,
     Critique,
@@ -50,6 +51,19 @@ def test_chunk_id_must_be_well_formed() -> None:
         Chunk(id="12", source="a.md", text="b", tokens=1)
 
 
+def test_candidate_portfolio_rejects_duplicate_titles() -> None:
+    candidate = {
+        "layer": "document",
+        "title": "Same Idea",
+        "value_thesis": "High value",
+        "why_now": "Now",
+        "differentiation": "Distinct",
+        "evidence_refs": ["S1"],
+    }
+    with pytest.raises(ValidationError, match="candidate titles must be unique"):
+        CandidatePortfolio(candidates=[candidate] * 5)
+
+
 def test_critique_weighted_overall_and_threshold() -> None:
     perfect = Critique(
         groundedness=10,
@@ -58,6 +72,8 @@ def test_critique_weighted_overall_and_threshold() -> None:
         feasibility=10,
         hitl_clarity=10,
         differentiation=10,
+        grounding_violations=[],
+        constraint_violations=[],
         feedback="ok",
     )
     assert perfect.overall == 10.0
@@ -70,10 +86,31 @@ def test_critique_weighted_overall_and_threshold() -> None:
         feasibility=5,
         hitl_clarity=5,
         differentiation=5,
+        grounding_violations=[],
+        constraint_violations=[],
         feedback="meh",
     )
     assert weak.overall == pytest.approx(6.25)
     assert weak.passed is (weak.overall >= CRITIQUE_THRESHOLD)
+
+
+def test_critic_hard_gates_override_a_high_weighted_score() -> None:
+    critique = Critique(
+        groundedness=10,
+        specificity=10,
+        quantified_impact=10,
+        feasibility=10,
+        hitl_clarity=10,
+        differentiation=10,
+        grounding_violations=["The claimed current tool is not in evidence."],
+        constraint_violations=[],
+        feedback="Remove the unsupported tool.",
+    )
+    assert critique.overall == 10
+    assert not critique.passed
+    assert critique.gate_reasons == [
+        "grounding: The claimed current tool is not in evidence."
+    ]
 
 
 def test_critique_bounds_enforced() -> None:
@@ -85,6 +122,8 @@ def test_critique_bounds_enforced() -> None:
             feasibility=0,
             hitl_clarity=0,
             differentiation=0,
+            grounding_violations=[],
+            constraint_violations=[],
             feedback="x",
         )
 

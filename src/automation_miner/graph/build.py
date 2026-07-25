@@ -33,7 +33,8 @@ from automation_miner import ingest as ing
 from automation_miner.artifacts.briefs import render_brief, title_slug
 from automation_miner.artifacts.registry import reindex
 from automation_miner.artifacts.reports import render_report, render_run_md, render_summary
-from automation_miner.artifacts.workspace import Workspace, write_json, write_text
+from automation_miner.artifacts.workspace import Workspace, read_json, write_json, write_text
+from automation_miner.constraints import normalize_constraint_params, render_constraints
 from automation_miner.context import (
     ContextBudget,
     EvidenceIndex,
@@ -48,25 +49,32 @@ from automation_miner.models.config import load_config
 from automation_miner.prompts import (
     DOMAIN_MAP_SYSTEM,
     DRAFTER_SYSTEM,
+    INPUT_ASSESSMENT_SYSTEM,
     LAYER_ANALYST_SYSTEM,
+    PORTFOLIO_PLANNER_SYSTEM,
     PROMPT_VERSION,
     SCORER_SYSTEM,
+    candidate_draft_prompt,
     domain_map_prompt,
-    draft_prompt,
+    input_assessment_prompt,
     layer_analysis_prompt,
+    portfolio_plan_prompt,
     score_prompt,
 )
 from automation_miner.readers import build_registry
 from automation_miner.schemas import (
     LAYER_ORDER,
+    AnalysisMode,
+    CandidatePortfolio,
     Chunk,
     ContextPacket,
     DomainMap,
-    DraftBatch,
     ICEScore,
+    InputAssessment,
     Layer,
     LayerAnalysis,
     Opportunity,
+    OpportunityCandidate,
     OpportunityDraft,
     RunManifest,
     StageFailure,
@@ -114,6 +122,9 @@ def build_graph(
             packet = ing.ingest_kb(
                 Path(value), state["constraints"], model, budget, registry, cache_root
             )
+        packet = packet.model_copy(
+            update={"constraint_params": state.get("constraint_params", {})}
+        )
         run_dir = workspace.new_run_dir(packet.domain_slug)
         write_json(run_dir / "context.json", packet)
         return {
@@ -126,16 +137,46 @@ def build_graph(
     def domain_map_node(state: MinerState) -> dict[str, Any]:
         started = time.time()
         ctx = ContextPacket.model_validate(state["context"])
+        assessment = InputAssessment.model_validate(state["input_assessment"])
+        requested = AnalysisMode(state.get("requested_mode", AnalysisMode.AUTO))
+        mode = (
+            AnalysisMode(assessment.recommended_mode)
+            if requested is AnalysisMode.AUTO
+            else requested
+        )
         result = model.call_json(
             "mapper",
             DOMAIN_MAP_SYSTEM,
-            domain_map_prompt(ctx.domain, ctx.constraints, ctx.overview),
+            domain_map_prompt(
+                ctx.domain,
+                ctx.constraints,
+                ctx.overview,
+                mode.value,
+                assessment.model_dump_json(indent=2),
+            ),
             DomainMap,
         )
+        result = result.model_copy(update={"analysis_mode": mode.value})
         write_json(Path(state["run_dir"]) / "domain_map.json", result)
         return {
             "domain_map": result.model_dump(mode="json"),
+            "analysis_mode": mode.value,
             "stage_seconds": _timed(state, "domain_map", started),
+        }
+
+    def assess_input_node(state: MinerState) -> dict[str, Any]:
+        started = time.time()
+        ctx = ContextPacket.model_validate(state["context"])
+        result = model.call_json(
+            "mapper",
+            INPUT_ASSESSMENT_SYSTEM,
+            input_assessment_prompt(ctx.overview, state.get("requested_mode", "auto")),
+            InputAssessment,
+        )
+        write_json(Path(state["run_dir"]) / "input_assessment.json", result)
+        return {
+            "input_assessment": result.model_dump(mode="json"),
+            "stage_seconds": _timed(state, "input_assessment", started),
         }
 
     def fanout_layers(state: MinerState) -> list[Send]:
@@ -144,6 +185,7 @@ def build_graph(
             "domain_map": state["domain_map"],
             "run_dir": state["run_dir"],
             "constraints": state["constraints"],
+            "analysis_mode": state["analysis_mode"],
         }
         return [Send("analyze_layer", {**shared, "layer": layer.value}) for layer in LAYER_ORDER]
 
@@ -161,57 +203,111 @@ def build_graph(
         result = model.call_json(
             "layer_analyst",
             LAYER_ANALYST_SYSTEM,
-            layer_analysis_prompt(layer.value, ctx.domain, ctx.constraints, evidence),
+            layer_analysis_prompt(
+                layer.value,
+                ctx.domain,
+                ctx.constraints,
+                evidence,
+                state["analysis_mode"],
+            ),
             LayerAnalysis,
         )
         result = result.model_copy(update={"layer": layer})
         write_json(Path(state["run_dir"]) / "layers" / f"{layer.value}.json", result)
         return {"layer_analyses": [result.model_dump(mode="json")]}
 
-    def fanout_drafts(state: MinerState) -> list[Send]:
+    def _prior_ideas(domain_slug: str) -> list[dict[str, Any]]:
+        path = workspace.root / "registry.json"
+        if not path.is_file():
+            return []
+        try:
+            entries = read_json(path).get("entries", [])
+        except (OSError, ValueError):
+            return []
+        same_domain = [entry for entry in entries if entry.get("d") == domain_slug]
+        selected = same_domain or entries
+        return [
+            {
+                "id": entry.get("i", ""),
+                "title": entry.get("t", ""),
+                "layer": entry.get("l", ""),
+                "domain": entry.get("d", ""),
+            }
+            for entry in selected[-50:]
+        ]
+
+    def plan_portfolio_node(state: MinerState) -> dict[str, Any]:
+        started = time.time()
+        ctx = ContextPacket.model_validate(state["context"])
         analyses = sorted(
             state["layer_analyses"], key=lambda a: LAYER_ORDER.index(Layer(a["layer"]))
         )
+        result = model.call_json(
+            "drafter",
+            PORTFOLIO_PLANNER_SYSTEM,
+            portfolio_plan_prompt(
+                _json(state["domain_map"]),
+                _json(analyses),
+                ctx.overview,
+                ctx.constraints,
+                _json(_prior_ideas(ctx.domain_slug)),
+            ),
+            CandidatePortfolio,
+        )
+        write_json(Path(state["run_dir"]) / "candidate_portfolio.json", result)
+        return {
+            "candidates": [candidate.model_dump(mode="json") for candidate in result.candidates],
+            "candidate_portfolio": result.model_dump(mode="json"),
+            "stage_seconds": _timed(state, "plan_portfolio", started),
+        }
+
+    def fanout_candidates(state: MinerState) -> list[Send]:
         shared = {
             "context": state["context"],
             "domain_map": state["domain_map"],
             "run_dir": state["run_dir"],
             "constraints": state["constraints"],
+            "analysis_mode": state["analysis_mode"],
+            "candidate_portfolio": state["candidate_portfolio"],
         }
         return [
-            Send("draft_layer", {**shared, "layer": a["layer"], "analysis": a})
-            for a in analyses
+            Send("draft_candidate", {**shared, "candidate": candidate})
+            for candidate in state["candidates"]
         ]
 
-    def draft_layer_node(state: MinerState) -> dict[str, Any]:
+    def draft_candidate_node(state: MinerState) -> dict[str, Any]:
         ctx = ContextPacket.model_validate(state["context"])
-        layer = Layer(state["layer"])
-        analysis = LayerAnalysis.model_validate(state["analysis"])
+        candidate = OpportunityCandidate.model_validate(state["candidate"])
         selected = _index(state).select(
-            draft_query(layer, analysis.findings + analysis.pain_points, ctx.domain),
+            draft_query(
+                candidate.layer,
+                [candidate.title, candidate.value_thesis, candidate.differentiation],
+                ctx.domain,
+            ),
             budget.draft_tokens,
-            pinned=analysis.evidence_refs,
+            pinned=candidate.evidence_refs,
         )
-        batch = model.call_json(
+        draft = model.call_json(
             "drafter",
             DRAFTER_SYSTEM,
-            draft_prompt(
-                layer.value,
-                analysis.model_dump_json(indent=2),
+            candidate_draft_prompt(
+                candidate.model_dump_json(indent=2),
+                _json(state["candidate_portfolio"]),
                 render_chunks(selected),
                 ctx.constraints,
                 _json(state["domain_map"]),
+                state["analysis_mode"],
             ),
-            DraftBatch,
+            OpportunityDraft,
         )
-        drafts = [
-            d.model_copy(update={"layer": layer}).model_dump(mode="json") for d in batch.drafts
-        ]
+        draft = draft.model_copy(update={"layer": candidate.layer})
         write_json(
-            Path(state["run_dir"]) / "drafts" / f"{layer.value}.batch.json",
-            {"layer": layer.value, "drafts": drafts},
+            Path(state["run_dir"])
+            / "drafts"
+            / f"candidate-{title_slug(candidate.title)}.json",
+            draft,
         )
-        return {"drafts": drafts}
+        return {"drafts": [draft.model_dump(mode="json")]}
 
     def critique_refine_node(state: MinerState) -> dict[str, Any]:
         started = time.time()
@@ -253,7 +349,12 @@ def build_graph(
                 "domain": ctx.domain,
                 "domain_slug": ctx.domain_slug,
                 "draft": final.model_dump(mode="json"),
-                "critique_overall": history[-1]["overall"],
+                "critique_overall": next(
+                    entry["overall"] for entry in history if entry["selected"]
+                ),
+                "quality_gate_reasons": next(
+                    entry["gate_reasons"] for entry in history if entry["selected"]
+                ),
                 "iterations": len(history),
             }
 
@@ -294,6 +395,7 @@ def build_graph(
                 overrides_applied=applied,
                 calibration=calibration,
                 unresolved_refs=unresolved,
+                quality_gate_reasons=item["quality_gate_reasons"],
             ).model_dump(mode="json")
 
         opportunities = _parallel_map(
@@ -398,8 +500,10 @@ def build_graph(
             domain=ctx.domain,
             domain_slug=ctx.domain_slug,
             constraints=ctx.constraints,
+            constraint_params=ctx.constraint_params,
             source_kind=ctx.source_kind,
             source_value=state["input_value"],
+            analysis_mode=state["analysis_mode"],
             created=state["created"],
             finished=f"{datetime.now():%Y-%m-%dT%H:%M:%S}",
             duration_seconds=round(duration, 2),
@@ -425,19 +529,23 @@ def build_graph(
 
     graph = StateGraph(MinerState)
     graph.add_node("ingest", ingest_node)
+    graph.add_node("assess_input", assess_input_node)
     graph.add_node("domain_map", domain_map_node)
     graph.add_node("analyze_layer", analyze_layer_node)
-    graph.add_node("draft_layer", draft_layer_node)
+    graph.add_node("plan_portfolio", plan_portfolio_node)
+    graph.add_node("draft_candidate", draft_candidate_node)
     graph.add_node("critique_refine", critique_refine_node)
     graph.add_node("score", score_node)
     graph.add_node("rank_filter", rank_filter_node)
     graph.add_node("publish", publish_node)
 
     graph.add_edge(START, "ingest")
-    graph.add_edge("ingest", "domain_map")
+    graph.add_edge("ingest", "assess_input")
+    graph.add_edge("assess_input", "domain_map")
     graph.add_conditional_edges("domain_map", fanout_layers, ["analyze_layer"])
-    graph.add_conditional_edges("analyze_layer", fanout_drafts, ["draft_layer"])
-    graph.add_edge("draft_layer", "critique_refine")
+    graph.add_edge("analyze_layer", "plan_portfolio")
+    graph.add_conditional_edges("plan_portfolio", fanout_candidates, ["draft_candidate"])
+    graph.add_edge("draft_candidate", "critique_refine")
     graph.add_edge("critique_refine", "score")
     graph.add_edge("score", "rank_filter")
     graph.add_edge("rank_filter", "publish")
@@ -470,6 +578,8 @@ def run_mine(
     max_iterations: int = 2,
     profile: str = "default",
     dry_run: bool = False,
+    mode: str = "auto",
+    constraint_params: dict[str, Any] | None = None,
     model: MinerModel | None = None,
 ) -> MinerState:
     """Run the full pipeline once. Exactly one of idea/file/kb is required."""
@@ -478,6 +588,12 @@ def run_mine(
         raise ValueError("Provide exactly one of idea, file, or kb.")
     if not 1 <= max_iterations <= MAX_ITERATIONS:
         raise ValueError(f"max_iterations must be between 1 and {MAX_ITERATIONS}")
+    try:
+        requested_mode = AnalysisMode(mode)
+    except ValueError as exc:
+        raise ValueError("mode must be auto, operational, or strategy") from exc
+    normalized_params = normalize_constraint_params(constraint_params)
+    effective_constraints = render_constraints(constraints, normalized_params)
     if idea is not None:
         kind, value = "idea", idea
     elif file is not None:
@@ -495,9 +611,11 @@ def run_mine(
             "workspace": str(workspace_path),
             "input_kind": kind,
             "input_value": value,
-            "constraints": constraints,
+            "constraints": effective_constraints,
+            "constraint_params": normalized_params,
             "max_iterations": max_iterations,
             "profile": profile,
+            "requested_mode": requested_mode.value,
             "created": f"{datetime.now():%Y-%m-%dT%H:%M:%S}",
             "start_ts": time.time(),
             "layer_analyses": [],
@@ -551,9 +669,11 @@ def _record_failure(workspace: Workspace, exc: BaseException) -> None:
 # Artifact each stage produces, in pipeline order. The last one present tells us
 # how far the run got.
 _STAGE_ARTIFACTS: tuple[tuple[str, str], ...] = (
-    ("context.json", "domain_map"),
+    ("context.json", "input_assessment"),
+    ("input_assessment.json", "domain_map"),
     ("domain_map.json", "layer_analysis"),
-    ("layers", "draft_opportunities"),
+    ("layers", "plan_portfolio"),
+    ("candidate_portfolio.json", "draft_opportunities"),
     ("drafts", "critique_refine"),
     ("scores.json", "rank_filter"),
     ("ranked.json", "publish"),

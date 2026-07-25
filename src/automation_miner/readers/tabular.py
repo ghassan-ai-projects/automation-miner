@@ -164,7 +164,7 @@ class CsvReader(BaseReader):
         except csv.Error:
             return ","
 
-    def meta(self, path: Path, data: bytes, segments: list[Segment]) -> dict[str, str | int]:
+    def meta(self, path: Path, data: bytes, segments: list[Segment]) -> dict[str, str | int | float | bool]:
         info = super().meta(path, data, segments)
         info["rows"] = getattr(self, "_rows", 0)
         info["columns"] = getattr(self, "_cols", 0)
@@ -248,7 +248,7 @@ class XlsxReader(BaseReader):
             raise ReaderError("workbook has no sheet with a usable header row")
         return segments
 
-    def meta(self, path: Path, data: bytes, segments: list[Segment]) -> dict[str, str | int]:
+    def meta(self, path: Path, data: bytes, segments: list[Segment]) -> dict[str, str | int | float | bool]:
         info = super().meta(path, data, segments)
         info["sheets"] = getattr(self, "_sheets", 0)
         return info

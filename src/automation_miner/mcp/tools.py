@@ -48,6 +48,11 @@ def _mine_domain(root: Path, args: dict[str, Any]) -> dict[str, Any]:
     dry_run = args.get("dry_run", False)
     if not isinstance(dry_run, bool):
         raise MCPError(MCPErrorCode.VALIDATION_ERROR, "dry_run must be a boolean")
+    constraint_params = args.get("constraint_params", {})
+    if not isinstance(constraint_params, dict):
+        raise MCPError(
+            MCPErrorCode.VALIDATION_ERROR, "constraint_params must be an object"
+        )
 
     kwargs: dict[str, Any] = {
         "workspace_path": root,
@@ -55,6 +60,8 @@ def _mine_domain(root: Path, args: dict[str, Any]) -> dict[str, Any]:
         "max_iterations": max_iterations,
         "profile": str(args.get("profile", "default")),
         "dry_run": dry_run,
+        "mode": str(args.get("mode", "auto")),
+        "constraint_params": constraint_params,
     }
     if input_type == "idea":
         kwargs["idea"] = raw_input
@@ -229,6 +236,22 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
             "input": {"type": "string", "description": "Idea text, file path, or KB folder."},
             "input_type": {"type": "string", "enum": list(INPUT_TYPES), "default": "auto"},
             "constraints": {"type": "string", "default": ""},
+            "constraint_params": {
+                "type": "object",
+                "additionalProperties": {
+                    "type": ["string", "number", "boolean"]
+                },
+                "default": {},
+                "description": (
+                    "Open-ended binding parameters, e.g. "
+                    '{"agent":"openclaw","deployment":"local-only"}.'
+                ),
+            },
+            "mode": {
+                "type": "string",
+                "enum": ["auto", "operational", "strategy"],
+                "default": "auto",
+            },
             "profile": {"type": "string", "default": "default"},
             "max_iterations": {"type": "integer", "minimum": 1, "maximum": 10, "default": 2},
             "dry_run": {
