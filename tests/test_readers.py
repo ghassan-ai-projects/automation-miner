@@ -17,6 +17,7 @@ from automation_miner.readers import (
     CsvReader,
     JsonReader,
     MediaType,
+    PdfReader,
     ReaderError,
     Segment,
     TextReader,
@@ -26,6 +27,7 @@ from automation_miner.readers import (
     looks_binary,
     split_markdown,
 )
+from automation_miner.readers.documents import pdf_extraction_quality
 from automation_miner.readers.registry import NEVER_TEXT, ReaderRegistry, _validate
 
 
@@ -63,6 +65,28 @@ def make_pdf(pages: list[str]) -> bytes:
         )
     out += f"trailer\n<</Size {top + 1}/Root 1 0 R>>\nstartxref\n{xref}\n%%EOF\n".encode()
     return bytes(out)
+
+
+def test_pdf_character_map_corruption_fails_before_mining(tmp_path: Path) -> None:
+    pytest.importorskip("pypdf")
+    corrupt = " ".join(["operaDng por;olio transformaDon"] * 30)
+    quality, examples = pdf_extraction_quality(corrupt)
+    assert quality < 0.9
+    assert "operaDng" in examples
+
+    path = tmp_path / "corrupt-map.pdf"
+    path.write_bytes(make_pdf([corrupt]))
+    with pytest.raises(ReaderError, match="low-quality PDF text extraction"):
+        PdfReader().read(path)
+
+
+def test_pdf_quality_override_is_explicit(tmp_path: Path) -> None:
+    pytest.importorskip("pypdf")
+    corrupt = " ".join(["operaDng por;olio transformaDon"] * 30)
+    path = tmp_path / "corrupt-map.pdf"
+    path.write_bytes(make_pdf([corrupt]))
+    document = PdfReader(allow_low_quality=True).read(path)
+    assert document.meta["extraction_quality"] < 0.9
 
 
 # ---------------------------------------------------------------------------

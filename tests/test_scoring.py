@@ -287,12 +287,12 @@ def test_low_budget_policy_filters_low_ease_with_a_reason() -> None:
     assert "Ease >= 4" in excluded.exclusion_reasons[0]
 
 
-def test_below_threshold_critique_is_retained_but_not_published() -> None:
+def test_only_materially_weak_inspiration_is_not_published() -> None:
     weak = make_opportunity("AM-001", 5, 5, 5).model_copy(
-        update={"critique_overall": 7.49, "iterations": 2}
+        update={"critique_overall": 5.99, "iterations": 2}
     )
     strong = make_opportunity("AM-002", 3, 3, 3).model_copy(
-        update={"critique_overall": 7.5}
+        update={"critique_overall": 6.0}
     )
 
     ranked = apply_portfolio_policy([weak, strong])
@@ -301,7 +301,7 @@ def test_below_threshold_critique_is_retained_but_not_published() -> None:
     excluded = filtered(ranked)[0]
     assert excluded.am_id == "AM-001"
     assert excluded.exclusion_reasons == [
-        "critic score 7.49 is below the 7.5 quality threshold after 2 iterations"
+        "critic score 5.99 is below the 6 inspiration quality floor after 2 iterations"
     ]
 
 

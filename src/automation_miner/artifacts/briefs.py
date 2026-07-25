@@ -122,9 +122,10 @@ def render_brief(opp: Opportunity, run_id: str, date: str | None = None) -> str:
 
     impact_rows = "\n".join(
         f"| {_cell(r.dimension)} | {_cell(r.current)} | {_cell(r.automated)} | "
-        f"{_cell(r.improvement)} |"
+        f"{_cell(r.improvement)} | {_cell(r.basis)}"
+        f"{' *(assumption)*' if r.assumption else ''} |"
         for r in d.impact_analysis
-    ) or "| — | — | — | — |"
+    ) or "| — | — | — | — | — |"
     risk_rows = "\n".join(
         f"| {_cell(r.risk)} | {r.likelihood.value.upper()[0]} | "
         f"{r.impact.value.upper()[0]} | {_cell(r.mitigation)} |"
@@ -195,10 +196,18 @@ tags: {tags}
 ### Constraints
 {_bullets(d.constraints)}
 
+## Assumptions and Validation
+
+### Assumptions
+{_bullets(d.assumptions)}
+
+### Validation Questions
+{_bullets(d.validation_questions)}
+
 ## Impact Analysis
 
-| Dimension | Current State | Automated State | Improvement |
-|-----------|--------------|----------------|-------------|
+| Dimension | Current State | Automated State | Improvement | Basis |
+|-----------|--------------|----------------|-------------|-------|
 {impact_rows}
 
 ## Implementation Path

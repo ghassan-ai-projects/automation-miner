@@ -33,7 +33,7 @@ from dataclasses import dataclass
 from typing import Iterable
 
 from automation_miner.schemas import (
-    CRITIQUE_THRESHOLD,
+    PUBLICATION_QUALITY_FLOOR,
     Eligibility,
     ICEScore,
     Layer,
@@ -312,10 +312,11 @@ def active_filters(opp: Opportunity) -> list[str]:
 def _exclusions(opp: Opportunity, policy: ConstraintPolicy) -> list[str]:
     """Every reason this opportunity fails the hard portfolio constraints."""
     reasons: list[str] = []
-    if opp.critique_overall < CRITIQUE_THRESHOLD:
+    reasons.extend(f"quality gate: {reason}" for reason in opp.quality_gate_reasons)
+    if opp.critique_overall < PUBLICATION_QUALITY_FLOOR:
         reasons.append(
             f"critic score {opp.critique_overall:g} is below the "
-            f"{CRITIQUE_THRESHOLD:g} quality threshold after "
+            f"{PUBLICATION_QUALITY_FLOOR:g} inspiration quality floor after "
             f"{opp.iterations} iteration{'s' if opp.iterations != 1 else ''}"
         )
     if policy.low_budget and opp.score.ease < 4:

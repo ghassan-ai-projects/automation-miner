@@ -23,6 +23,7 @@ def test_full_run_dry(workspace: Path) -> None:
     # Artifacts exist
     for rel in (
         "context.json",
+        "input_assessment.json",
         "domain_map.json",
         "opportunities.json",
         "summary.json",
@@ -33,7 +34,8 @@ def test_full_run_dry(workspace: Path) -> None:
         assert (run_dir / rel).is_file(), f"missing {rel}"
     for layer in LAYER_ORDER:
         assert (run_dir / "layers" / f"{layer.value}.json").is_file()
-        assert (run_dir / "drafts" / f"{layer.value}.batch.json").is_file()
+    assert (run_dir / "candidate_portfolio.json").is_file()
+    assert len(list((run_dir / "drafts").glob("candidate-*.json"))) == 5
     assert (run_dir / "scores.json").is_file()
     assert (run_dir / "ranked.json").is_file()
 
@@ -100,6 +102,117 @@ def test_full_run_dry(workspace: Path) -> None:
     assert manifest["config_source"] == "defaults"
     assert manifest["prompt_version"]
     assert manifest["opportunities"] == [f"AM-{i:03d}" for i in range(1, 6)]
+    assert manifest["analysis_mode"] == "operational"
+
+
+def test_explicit_strategy_mode_is_persisted(workspace: Path) -> None:
+    result = run_mine(
+        workspace_path=workspace,
+        idea="Portfolio AI roadmap and proposed investment themes",
+        mode="strategy",
+        dry_run=True,
+    )
+    run_dir = Path(result["run_dir"])
+    domain_map = read_json(run_dir / "domain_map.json")
+    manifest = read_json(run_dir / "run.json")
+    assert domain_map["analysis_mode"] == "strategy"
+    assert manifest["analysis_mode"] == "strategy"
+
+
+def test_dynamic_constraint_params_are_persisted_and_reach_prompts(
+    workspace: Path, monkeypatch
+) -> None:
+    from automation_miner.models.client import MinerModel
+
+    prompts: list[str] = []
+    original = MinerModel.call_json
+
+    def capture(self, role, system, prompt, schema):  # type: ignore[no-untyped-def]
+        prompts.append(prompt)
+        return original(self, role, system, prompt, schema)
+
+    monkeypatch.setattr(MinerModel, "call_json", capture)
+    result = run_mine(
+        workspace_path=workspace,
+        idea="OpenClaw-only opportunity portfolio",
+        constraint_params={"agent": "openclaw", "deployment": "local-only"},
+        dry_run=True,
+    )
+    run_dir = Path(result["run_dir"])
+    context = read_json(run_dir / "context.json")
+    manifest = read_json(run_dir / "run.json")
+
+    expected = {"agent": "openclaw", "deployment": "local-only"}
+    assert context["constraint_params"] == expected
+    assert manifest["constraint_params"] == expected
+    opportunities = read_json(run_dir / "opportunities.json")["opportunities"]
+    assert all(
+        "OpenClaw agent runtime" in opportunity["draft"]["technical_requirements"]
+        for opportunity in opportunities
+    )
+    planner = next(prompt for prompt in prompts if "Prior published ideas" in prompt)
+    candidate_prompts = [
+        prompt for prompt in prompts if "Complete planned portfolio" in prompt
+    ]
+    assert "- agent = openclaw" in planner
+    assert len(candidate_prompts) == 5
+    assert all("- deployment = local-only" in prompt for prompt in candidate_prompts)
+
+
+def test_portfolio_planner_and_drafters_share_all_candidate_ideas(
+    workspace: Path, monkeypatch
+) -> None:
+    from automation_miner.models.client import MinerModel
+
+    candidate_prompts: list[str] = []
+    original = MinerModel.call_json
+
+    def capture(self, role, system, prompt, schema):  # type: ignore[no-untyped-def]
+        if "Complete planned portfolio" in prompt:
+            candidate_prompts.append(prompt)
+        return original(self, role, system, prompt, schema)
+
+    monkeypatch.setattr(MinerModel, "call_json", capture)
+    run_mine(workspace_path=workspace, idea="Diverse portfolio", dry_run=True)
+
+    assert len(candidate_prompts) == 5
+    for prompt in candidate_prompts:
+        for layer in LAYER_ORDER:
+            assert f"High-Value {layer.value.title()} Opportunity" in prompt
+
+
+def test_portfolio_planner_receives_prior_published_ideas(
+    workspace: Path, monkeypatch
+) -> None:
+    from automation_miner.models.client import MinerModel
+
+    run_mine(workspace_path=workspace, idea="Repeatable domain", dry_run=True)
+    planner_prompts: list[str] = []
+    original = MinerModel.call_json
+
+    def capture(self, role, system, prompt, schema):  # type: ignore[no-untyped-def]
+        if "Prior published ideas to avoid repeating" in prompt:
+            planner_prompts.append(prompt)
+        return original(self, role, system, prompt, schema)
+
+    monkeypatch.setattr(MinerModel, "call_json", capture)
+    run_mine(workspace_path=workspace, idea="Repeatable domain", dry_run=True)
+
+    assert len(planner_prompts) == 1
+    for layer in LAYER_ORDER:
+        assert f"High-Value {layer.value.title()} Opportunity" in planner_prompts[0]
+
+
+def test_idea_count_can_be_changed_without_code_policy(workspace: Path) -> None:
+    result = run_mine(
+        workspace_path=workspace,
+        idea="Three focused ideas",
+        constraint_params={"ideas": 3},
+        dry_run=True,
+    )
+    portfolio = read_json(Path(result["run_dir"]) / "candidate_portfolio.json")
+    assert len(portfolio["candidates"]) == 3
+    assert len(result["opportunities"]) == 3
 
 
 def test_numbering_continues_across_runs(workspace: Path) -> None:
@@ -271,7 +384,7 @@ def test_run_manifest_records_usage_and_stage_timings(workspace: Path) -> None:
     manifest = read_json(Path(result["run_dir"]) / "run.json")
 
     assert manifest["usage"]["calls"] > 0
-    assert manifest["usage"]["by_role"]["drafter"]["calls"] == 5
+    assert manifest["usage"]["by_role"]["drafter"]["calls"] == 6
     assert set(manifest["stage_seconds"]) >= {"ingest", "domain_map", "score", "publish"}
     assert manifest["context"]["chunks"] >= 1
     assert manifest["filtered"] == []

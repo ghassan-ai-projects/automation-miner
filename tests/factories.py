@@ -49,6 +49,8 @@ def make_draft(**overrides: Any) -> OpportunityDraft:
                 "current": "5 h/week",
                 "automated": "30 min/week",
                 "improvement": "90%",
+                "basis": "Measured process baseline",
+                "assumption": False,
             }
         ],
         "implementation": {"mvp": ["m"], "expansion": ["e"], "autonomy": ["a"]},
@@ -59,6 +61,8 @@ def make_draft(**overrides: Any) -> OpportunityDraft:
         "impact_estimate": "high",
         "risk_level": "medium",
         "evidence_refs": ["S1"],
+        "assumptions": [],
+        "validation_questions": ["Confirm the baseline with the process owner."],
     }
     data.update(overrides)
     return OpportunityDraft.model_validate(data)

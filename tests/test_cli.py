@@ -152,6 +152,42 @@ def test_mine_json_output(workspace: Path, capsys) -> None:
     assert payload["opportunities"][0]["tier"] == "high"
 
 
+def test_mine_accepts_repeatable_dynamic_constraints(workspace: Path, capsys) -> None:
+    rc = main(
+        [
+            "mine",
+            "OpenClaw portfolio",
+            "--constraint",
+            "agent=openclaw",
+            "--constraint",
+            "deployment=local-only",
+            "--dry-run",
+            "--json",
+            "--workspace",
+            str(workspace),
+        ]
+    )
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert "agent = openclaw" in payload["constraints"]
+
+
+def test_mine_rejects_invalid_dynamic_constraint(workspace: Path, capsys) -> None:
+    rc = main(
+        [
+            "mine",
+            "Invalid constraint",
+            "--constraint",
+            "agent",
+            "--dry-run",
+            "--workspace",
+            str(workspace),
+        ]
+    )
+    assert rc == 2
+    assert "must use key=value" in capsys.readouterr().err
+
+
 def test_summary_command(workspace: Path, capsys) -> None:
     run_id = _mine(workspace)
     capsys.readouterr()

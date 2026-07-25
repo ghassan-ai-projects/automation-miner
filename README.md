@@ -10,14 +10,15 @@ automation opportunity briefs**, each ICE-scored and filtered into action tiers.
 The pipeline (LangGraph):
 
 ```
-ingest → domain_map → layer_analysis (×5 parallel) → draft_opportunities (×5)
+ingest → input_assessment → domain_map → layer_analysis (×5 parallel)
+       → portfolio_plan (value + diversity + prior ideas) → draft_candidates (parallel)
        → critique ⇄ refine (threshold 7.5, max N rounds, parallel over opportunities)
        → score (LLM proposes, code validates) → rank + strategic filters → publish
 ```
 
-Opportunities still below the 7.5 critic threshold after the final refinement
-round are retained with their critique history and an exclusion reason, but are
-not published as briefs.
+The 7.5 critic target drives refinement; this is an inspiration engine, so a
+clean draft remains publishable down to the 6.0 inspiration floor. Hard
+grounding or constraint violations still block publication and remain visible.
 
 - **Any document format** — md, txt, pdf, docx, xlsx, pptx, csv, json, yaml, html —
   through a plugin reader registry you can extend without touching this package.
@@ -56,6 +57,34 @@ Inputs can also be a single file or a whole folder:
 uv run automation-miner mine --kb ./kb/ --constraints "compliance:heavy"
 ```
 
+Constraints may also be passed as open-ended parameters. The engine does not
+need a code change for every new behavior:
+
+```bash
+uv run automation-miner mine --file ./research.md \
+  --constraint agent=openclaw \
+  --constraint deployment=local-only \
+  --constraint max_agents=1
+```
+
+Every parameter is passed to portfolio planning, drafting, criticism, refinement,
+and scoring as a binding run contract. The Python API accepts the same shape as
+`constraint_params={"agent": "openclaw"}`, and the MCP tool exposes it as an object.
+
+The default `--mode auto` runs an evidence preflight. It chooses `operational`
+for current workflows and `strategy` for roadmaps, market research, and proposed
+initiatives. Override it when operator intent is known:
+
+```bash
+uv run automation-miner mine --file ./roadmap.md --mode strategy
+uv run automation-miner mine --kb ./process-evidence/ --mode operational
+```
+
+Strategy mode produces hypotheses with explicit assumptions and validation
+questions. It does not treat recommendations or benchmarks as observed current
+processes. Operational mode expects evidence such as owners, systems, handoffs,
+volumes, durations, errors, and controls.
+
 Other commands:
 
 ```bash
@@ -89,6 +118,10 @@ binary — are skipped individually with a reason and listed in the run report, 
 silently dropped. Spreadsheets are profiled (row counts, column types, value
 distributions, a bounded row sample) rather than dumped, so a 5,000-row CSV costs a few
 hundred tokens instead of megabytes.
+
+PDFs with broken character maps also fail before mining when extraction produces
+systematic corruption such as `operaDng` or `por;olio`. OCR or re-export the source;
+`[readers.pdf] allow_low_quality = true` is an explicit unsafe override.
 
 ### Adding a format
 
@@ -167,7 +200,8 @@ markdown or load every full draft to decide what to act on.
 │       ├── context.json           # evidence index, skipped files, context stats
 │       ├── domain_map.json
 │       ├── layers/<layer>.json    # 5 layer analyses
-│       ├── drafts/<layer>.batch.json # raw per-layer draft batches
+│       ├── candidate_portfolio.json  # value/diversity plan + prior-idea comparison
+│       ├── drafts/candidate-*.json   # one raw draft per planned candidate
 │       ├── drafts/AM-XXX.v<n>.json   # every draft + critique iteration
 │       ├── scores.json            # validated scores before portfolio policy
 │       ├── ranked.json            # ranked portfolio with eligibility + stats

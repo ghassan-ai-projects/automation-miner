@@ -31,6 +31,8 @@ class FakeModel:
                 feasibility=value,
                 hitl_clarity=value,
                 differentiation=value,
+                grounding_violations=[],
+                constraint_violations=[],
                 feedback=f"round {self.critic_calls}",
             )
         if role == "refiner":
@@ -91,3 +93,38 @@ def test_critic_and_refiner_receive_evidence_and_constraints() -> None:
     assert all("no custom dev" in prompt for prompt in critic_prompts)
     assert "100 cases/day" in refiner_prompts[0]
     assert "no custom dev" in refiner_prompts[0]
+
+
+def test_refinement_regression_keeps_the_best_version() -> None:
+    model = FakeModel([7.4, 5.0])
+    original = _draft()
+    final, history = run_critique_loop(model, original, [], max_iterations=2)
+
+    assert final == original
+    assert history[0]["selected"] is True
+    assert history[1]["selected"] is False
+
+
+def test_gate_clean_version_beats_higher_invalid_score() -> None:
+    class GateModel(FakeModel):
+        def call_json(self, role: str, system: str, prompt: str, schema: type) -> Any:
+            if role != "critic":
+                return super().call_json(role, system, prompt, schema)
+            self.critic_calls += 1
+            invalid = self.critic_calls == 1
+            value = 8.0 if invalid else 7.4
+            return schema(
+                groundedness=value,
+                specificity=value,
+                quantified_impact=value,
+                feasibility=value,
+                hitl_clarity=value,
+                differentiation=value,
+                grounding_violations=["unsupported baseline"] if invalid else [],
+                constraint_violations=[],
+                feedback="remove unsupported baseline" if invalid else "clean",
+            )
+
+    _, history = run_critique_loop(GateModel([8.0, 7.4]), _draft(), [], max_iterations=2)
+    assert history[0]["overall"] > history[1]["overall"]
+    assert history[1]["selected"] is True

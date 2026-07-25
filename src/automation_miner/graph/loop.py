@@ -58,6 +58,8 @@ def run_critique_loop(
                 "critique": critique.model_dump(mode="json"),
                 "overall": critique.overall,
                 "passed": critique.passed,
+                "gate_reasons": critique.gate_reasons,
+                "selected": False,
             }
         )
         if critique.passed or round_no == max_iterations:
@@ -74,4 +76,18 @@ def run_critique_loop(
             OpportunityDraft,
         )
         current = current.model_copy(update={"layer": draft.layer})
-    return current, history
+
+    # A refiner is not assumed to be monotonic. Preserve the strongest version
+    # instead of silently replacing it with a lower-scoring rewrite.
+    eligible = [entry for entry in history if entry["passed"]]
+    pool = eligible or history
+    selected = max(
+        pool,
+        key=lambda entry: (
+            not entry["gate_reasons"],
+            entry["overall"],
+            -entry["version"],
+        ),
+    )
+    selected["selected"] = True
+    return OpportunityDraft.model_validate(selected["draft"]), history

@@ -13,6 +13,7 @@ appearing to have been read.
 from __future__ import annotations
 
 import io
+import re
 from pathlib import Path
 
 from automation_miner.readers.base import (
@@ -25,6 +26,31 @@ from automation_miner.readers.base import (
 )
 
 MAX_TABLE_ROWS = 50
+PDF_SUSPICIOUS_TOKEN_MIN = 20
+PDF_SUSPICIOUS_TOKEN_RATIO = 0.02
+
+
+def pdf_extraction_quality(text: str) -> tuple[float, list[str]]:
+    """Estimate whether a PDF's character map corrupted otherwise visible prose.
+
+    Broken ToUnicode maps commonly turn words into ``operaDng`` or ``por;olio``.
+    This is not mojibake that an encoding retry can repair. A conservative
+    threshold avoids flagging a handful of camelCase identifiers in technical
+    PDFs while catching document-wide substitution patterns.
+    """
+    tokens = re.findall(r"\S+", text)
+    if not tokens:
+        return 0.0, []
+    suspicious = [
+        token
+        for token in tokens
+        if re.search(r"[a-z][A-Z]", token)
+        or re.search(r"[A-Za-z][;\"|][A-Za-z]", token)
+        or "\ufffd" in token
+    ]
+    ratio = len(suspicious) / len(tokens)
+    quality = max(0.0, round(1.0 - ratio, 3))
+    return quality, suspicious[:8]
 
 
 class PdfReader(BaseReader):
@@ -69,12 +95,35 @@ class PdfReader(BaseReader):
                 f"no extractable text in {self._pages} page(s) — likely a scanned "
                 "PDF; OCR it before mining"
             )
+        quality, examples = pdf_extraction_quality("\n".join(s.text for s in segments))
+        self._extraction_quality = quality
+        if (
+            examples
+            and (1.0 - quality) >= PDF_SUSPICIOUS_TOKEN_RATIO
+            and sum(
+                1
+                for segment in segments
+                for token in re.findall(r"\S+", segment.text)
+                if re.search(r"[a-z][A-Z]", token)
+                or re.search(r"[A-Za-z][;\"|][A-Za-z]", token)
+                or "\ufffd" in token
+            )
+            >= PDF_SUSPICIOUS_TOKEN_MIN
+            and not bool(self.options.get("allow_low_quality", False))
+        ):
+            sample = ", ".join(examples)
+            raise ReaderError(
+                "low-quality PDF text extraction detected "
+                f"(quality {quality:.1%}; examples: {sample}). OCR the PDF or set "
+                "[readers.pdf] allow_low_quality = true to override"
+            )
         return segments
 
-    def meta(self, path: Path, data: bytes, segments: list[Segment]) -> dict[str, str | int]:
+    def meta(self, path: Path, data: bytes, segments: list[Segment]) -> dict[str, str | int | float | bool]:
         info = super().meta(path, data, segments)
         info["pages"] = getattr(self, "_pages", 0)
         info["pages_with_text"] = len(segments)
+        info["extraction_quality"] = getattr(self, "_extraction_quality", 1.0)
         return info
 
 
@@ -150,7 +199,7 @@ class DocxReader(BaseReader):
         tail = name.split()[-1]
         return int(tail) if tail.isdigit() else 1
 
-    def meta(self, path: Path, data: bytes, segments: list[Segment]) -> dict[str, str | int]:
+    def meta(self, path: Path, data: bytes, segments: list[Segment]) -> dict[str, str | int | float | bool]:
         info = super().meta(path, data, segments)
         info["tables"] = getattr(self, "_tables", 0)
         return info
@@ -201,7 +250,7 @@ class PptxReader(BaseReader):
             raise ReaderError(f"no extractable text in {self._slides} slide(s)")
         return segments
 
-    def meta(self, path: Path, data: bytes, segments: list[Segment]) -> dict[str, str | int]:
+    def meta(self, path: Path, data: bytes, segments: list[Segment]) -> dict[str, str | int | float | bool]:
         info = super().meta(path, data, segments)
         info["slides"] = getattr(self, "_slides", 0)
         return info
