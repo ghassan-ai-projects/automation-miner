@@ -25,6 +25,8 @@ def test_all_tools_have_schemas() -> None:
         "get_opportunity",
         "query_registry",
         "get_run_report",
+        "get_run_summary",
+        "list_readers",
         "reindex",
         "server_info",
     }
@@ -34,7 +36,43 @@ def test_mine_domain_envelope(workspace: Path) -> None:
     data = _mine(workspace)
     assert data["run_id"]
     assert len(data["opportunities"]) == 5
+    assert data["filtered"] == []
     assert Path(data["artifacts"]["report"]).is_file()
+    assert Path(data["artifacts"]["summary_json"]).is_file()
+
+
+def test_mine_domain_returns_the_summary_inline(workspace: Path) -> None:
+    """An agent should not have to parse markdown or load every full draft."""
+    summary = _mine(workspace)["summary"]
+    assert summary["run_id"]
+    assert summary["stats"]["published"] == 5
+    assert summary["usage"]["calls"] > 0
+    entry = summary["opportunities"][0]
+    assert entry["am_id"] == "AM-001"
+    assert entry["tier"] and entry["ice"] and entry["problem"]
+    assert entry["eligibility"] == "published"
+    assert Path(entry["brief_path"]).is_file()
+
+
+def test_get_run_summary(workspace: Path) -> None:
+    run_id = _mine(workspace)["run_id"]
+    resp = dispatch("get_run_summary", {"run_id": run_id}, workspace)
+    assert resp.success, resp.error
+    assert resp.data["summary"]["run_id"] == run_id
+
+
+def test_get_run_summary_rejects_traversal(workspace: Path) -> None:
+    resp = dispatch("get_run_summary", {"run_id": "../../etc"}, workspace)
+    assert not resp.success
+    assert resp.error.code.value == "validation_error"
+
+
+def test_list_readers(workspace: Path) -> None:
+    resp = dispatch("list_readers", {}, workspace)
+    assert resp.success, resp.error
+    names = {row["name"] for row in resp.data["readers"]}
+    assert {"text", "json", "csv", "pdf"} <= names
+    assert ".md" in resp.data["formats"]
 
 
 def test_server_info(workspace: Path) -> None:

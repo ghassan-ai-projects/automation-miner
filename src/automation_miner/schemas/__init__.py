@@ -62,17 +62,127 @@ class OppStatus(StrEnum):
     DEPRECATED = "deprecated"
 
 
+class Tier(StrEnum):
+    """ICE band, so a score is legible without remembering the 1-125 scale."""
+
+    VISION = "vision"
+    HIGH = "high"
+    MEDIUM = "medium"
+    LOW = "low"
+
+    @classmethod
+    def for_ice(cls, ice: int) -> Tier:
+        if ice >= 80:
+            return cls.VISION
+        if ice >= 60:
+            return cls.HIGH
+        if ice >= 40:
+            return cls.MEDIUM
+        return cls.LOW
+
+    @property
+    def label(self) -> str:
+        return {
+            Tier.VISION: "Vision (ICE 80+)",
+            Tier.HIGH: "High (ICE 60-79)",
+            Tier.MEDIUM: "Medium (ICE 40-59)",
+            Tier.LOW: "Low (ICE <40)",
+        }[self]
+
+    @property
+    def rank(self) -> int:
+        return {Tier.VISION: 4, Tier.HIGH: 3, Tier.MEDIUM: 2, Tier.LOW: 1}[self]
+
+
+class Eligibility(StrEnum):
+    """Whether an opportunity reached publication or was filtered by policy.
+
+    Filtered opportunities are retained rather than deleted: they were drafted,
+    critiqued, refined and scored, so discarding them silently hides work the
+    operator paid for.
+    """
+
+    PUBLISHED = "published"
+    FILTERED = "filtered"
+
+
+# ---------------------------------------------------------------------------
+# Ingestion / context
+# ---------------------------------------------------------------------------
+
+
+class SkippedFile(ArtifactModel):
+    """A file the pipeline did not read, and why — never silently dropped."""
+
+    path: str
+    reason: str
+    reader: str = ""
+
+
+class Chunk(ArtifactModel):
+    """One citable unit of evidence.
+
+    ``id`` is short (``S12``) because it is repeated in prompts and cited back by
+    the drafter; ``locator`` is the address inside the source document, in that
+    format's own terms (``p.4``, ``Sheet1!rows 2-13``, a markdown heading path).
+    """
+
+    id: str = Field(pattern=r"^S\d+$")
+    source: str
+    locator: str = ""
+    text: str
+    tokens: int = Field(ge=0)
+    digested: bool = False
+
+    @property
+    def label(self) -> str:
+        return f"[{self.id}] {self.source}" + (f" {self.locator}" if self.locator else "")
+
+
+class ContextStats(ArtifactModel):
+    """Accounting for what ingestion kept, dropped, and compressed."""
+
+    source_files: int = 0
+    included_files: int = 0
+    skipped_files: int = 0
+    source_chars: int = 0
+    evidence_chars: int = 0
+    evidence_tokens: int = 0
+    budget_tokens: int = 0
+    budget_used_pct: float = 0.0
+    retention_pct: float = 100.0
+    chunks: int = 0
+    digested: bool = False
+    truncated: bool = False
+    digest_calls: int = 0
+    digest_cache_hits: int = 0
+
+
 class ContextPacket(ArtifactModel):
-    """Normalized, budget-bounded input for the pipeline."""
+    """Normalized, budget-bounded input for the pipeline.
+
+    ``chunks`` is the evidence index every downstream stage selects from;
+    ``overview`` is the bounded global view used for domain mapping.
+    """
 
     domain: str
     domain_slug: str
     constraints: str = ""
     source_kind: Literal["idea", "file", "kb"]
-    content: str
+    overview: str
+    chunks: list[Chunk] = Field(default_factory=list)
     files: list[str] = Field(default_factory=list)
-    digested: bool = False
-    truncated: bool = False
+    skipped: list[SkippedFile] = Field(default_factory=list)
+    reader_errors: list[str] = Field(default_factory=list)
+    stats: ContextStats = Field(default_factory=ContextStats)
+
+    def chunk_ids(self) -> set[str]:
+        return {chunk.id for chunk in self.chunks}
+
+
+# ---------------------------------------------------------------------------
+# Analysis
+# ---------------------------------------------------------------------------
 
 
 class StakeholderProcess(ArtifactModel):
@@ -104,6 +214,7 @@ class LayerAnalysis(ArtifactModel):
     findings: list[str]
     pain_points: list[str]
     pain_level: Level
+    evidence_refs: list[str] = Field(default_factory=list)
 
 
 class RiskRow(ArtifactModel):
@@ -145,10 +256,12 @@ class OpportunityDraft(ArtifactModel):
     impact_analysis: list[ImpactRow]
     implementation: PhasePlan
     risks: list[RiskRow]
-    agents_required: str
+    agent_count: int = Field(ge=1, le=20)
+    agent_topology: str
     effort: Level
     impact_estimate: Level
     risk_level: Level
+    evidence_refs: list[str] = Field(default_factory=list)
 
 
 class DraftBatch(ArtifactModel):
@@ -192,13 +305,25 @@ class Critique(ArtifactModel):
         return self.overall >= CRITIQUE_THRESHOLD
 
 
+# ---------------------------------------------------------------------------
+# Scoring
+# ---------------------------------------------------------------------------
+
+
 class ICEScore(ArtifactModel):
-    """LLM-proposed ICE factors with rationale; product computed by code."""
+    """LLM-proposed ICE factors with per-factor rationale; product computed by code.
+
+    One rationale per factor rather than a single paragraph: an operator
+    disputing a score needs to know why *Ease* is 4, and a shared paragraph
+    makes that unauditable.
+    """
 
     impact: int = Field(ge=1, le=5)
     confidence: int = Field(ge=1, le=5)
     ease: int = Field(ge=1, le=5)
-    rationale: str
+    impact_rationale: str
+    confidence_rationale: str
+    ease_rationale: str
 
     @property
     def ice(self) -> int:
@@ -206,7 +331,7 @@ class ICEScore(ArtifactModel):
 
 
 class Opportunity(ArtifactModel):
-    """Final scored opportunity, ready to publish."""
+    """Final scored opportunity."""
 
     am_id: str = Field(pattern=r"^AM-(?:00[1-9]|0[1-9]\d|[1-9]\d{2,})$")
     domain: str
@@ -215,15 +340,117 @@ class Opportunity(ArtifactModel):
     draft: OpportunityDraft
     score: ICEScore
     ice: int = Field(ge=1, le=125)
+    tier: Tier
     critique_overall: float = Field(ge=0, le=10)
     iterations: int = Field(ge=1)
+    eligibility: Eligibility = Eligibility.PUBLISHED
+    exclusion_reasons: list[str] = Field(default_factory=list)
     overrides_applied: list[str] = Field(default_factory=list)
+    calibration: list[str] = Field(default_factory=list)
+    unresolved_refs: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")
-    def validate_ice_product(self) -> Opportunity:
+    def validate_derived_fields(self) -> Opportunity:
         if self.ice != self.score.ice:
             raise ValueError("ice must equal impact x confidence x ease")
+        if self.tier is not Tier.for_ice(self.ice):
+            raise ValueError(f"tier must be {Tier.for_ice(self.ice).value!r} for ICE {self.ice}")
+        if self.eligibility is Eligibility.FILTERED and not self.exclusion_reasons:
+            raise ValueError("filtered opportunities must record at least one exclusion reason")
         return self
+
+    @property
+    def published(self) -> bool:
+        return self.eligibility is Eligibility.PUBLISHED
+
+
+class PortfolioStats(ArtifactModel):
+    """Deterministic shape of one run's portfolio, for reports and summaries."""
+
+    total: int = 0
+    published: int = 0
+    filtered: int = 0
+    by_layer: dict[str, int] = Field(default_factory=dict)
+    by_tier: dict[str, int] = Field(default_factory=dict)
+    avg_ice: float = 0.0
+    median_ice: float = 0.0
+    top_ice: int = 0
+    top_id: str = ""
+    filters: dict[str, list[str]] = Field(default_factory=dict)
+
+
+# ---------------------------------------------------------------------------
+# Run manifest / telemetry
+# ---------------------------------------------------------------------------
+
+
+class RoleUsage(ArtifactModel):
+    """Per-role call and token accounting."""
+
+    calls: int = 0
+    retries: int = 0
+    failures: int = 0
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    seconds: float = 0.0
+    exact: bool = False
+
+    @property
+    def total_tokens(self) -> int:
+        return self.prompt_tokens + self.completion_tokens
+
+
+class RunUsage(ArtifactModel):
+    """Whole-run totals. Token counts are exact when the provider reports them."""
+
+    calls: int = 0
+    retries: int = 0
+    failures: int = 0
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+    seconds: float = 0.0
+    exact: bool = False
+    by_role: dict[str, RoleUsage] = Field(default_factory=dict)
+
+
+class SummaryEntry(ArtifactModel):
+    """One row of summary.json — enough for an agent to triage without the full brief."""
+
+    am_id: str
+    title: str
+    layer: Layer
+    ice: int
+    tier: Tier
+    impact: int
+    confidence: int
+    ease: int
+    effort: Level
+    risk_level: Level
+    critique: float
+    iterations: int
+    eligibility: Eligibility
+    exclusion_reasons: list[str] = Field(default_factory=list)
+    filters: list[str] = Field(default_factory=list)
+    problem: str
+    brief_path: str = ""
+
+
+class RunSummary(ArtifactModel):
+    """summary.json — the compact, agent-facing view of a run."""
+
+    run_id: str
+    domain: str
+    domain_slug: str
+    constraints: str = ""
+    created: str = ""
+    duration_seconds: float = 0.0
+    dry_run: bool = False
+    stats: PortfolioStats = Field(default_factory=PortfolioStats)
+    context: ContextStats = Field(default_factory=ContextStats)
+    usage: RunUsage = Field(default_factory=RunUsage)
+    opportunities: list[SummaryEntry] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
 
 
 class RunManifest(ArtifactModel):
@@ -245,3 +472,18 @@ class RunManifest(ArtifactModel):
     dry_run: bool
     models: dict[str, str] = Field(default_factory=dict)
     opportunities: list[str] = Field(default_factory=list)
+    filtered: list[str] = Field(default_factory=list)
+    stage_seconds: dict[str, float] = Field(default_factory=dict)
+    usage: RunUsage = Field(default_factory=RunUsage)
+    context: ContextStats = Field(default_factory=ContextStats)
+
+
+class StageFailure(ArtifactModel):
+    """error.json — written when a stage raises, so a failed run is diagnosable."""
+
+    run_id: str = ""
+    stage: str
+    error_type: str
+    error: str
+    created: str
+    artifacts_written: list[str] = Field(default_factory=list)

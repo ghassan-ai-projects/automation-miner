@@ -68,12 +68,28 @@ def _mine_domain(root: Path, args: dict[str, Any]) -> dict[str, Any]:
     except ValueError as exc:
         raise MCPError(MCPErrorCode.VALIDATION_ERROR, str(exc)) from exc
     run_dir = Path(result["run_dir"])
+    summary_path = run_dir / "summary.json"
+    # The summary is returned inline so a driving agent does not have to choose
+    # between parsing report.md and loading every full draft from
+    # opportunities.json just to learn what the run produced.
+    summary = read_json(summary_path) if summary_path.is_file() else {}
     return {
         "run_id": result["run_id"],
-        "opportunities": [o["am_id"] for o in result.get("opportunities", [])],
+        "opportunities": [
+            entry["am_id"]
+            for entry in summary.get("opportunities", [])
+            if entry.get("eligibility") == "published"
+        ],
+        "filtered": [
+            entry["am_id"]
+            for entry in summary.get("opportunities", [])
+            if entry.get("eligibility") != "published"
+        ],
+        "summary": summary,
         "artifacts": {
             "run_dir": str(run_dir),
             "report": result.get("report_path", ""),
+            "summary_json": str(summary_path),
             "opportunities_json": str(run_dir / "opportunities.json"),
             "registry": str(root / "registry.json"),
         },
@@ -138,6 +154,38 @@ def _get_run_report(root: Path, args: dict[str, Any]) -> dict[str, Any]:
     return {"run_id": run_id, "report": path.read_text(encoding="utf-8")}
 
 
+def _get_run_summary(root: Path, args: dict[str, Any]) -> dict[str, Any]:
+    run_id = str(args.get("run_id", ""))
+    try:
+        path = Workspace(root).run_summary_path(run_id)
+    except ValueError as exc:
+        raise MCPError(MCPErrorCode.VALIDATION_ERROR, str(exc)) from exc
+    if not path.is_file():
+        raise MCPError(MCPErrorCode.NOT_FOUND, f"No summary for run {run_id!r}")
+    return {"run_id": run_id, "summary": read_json(path)}
+
+
+def _list_readers(root: Path, args: dict[str, Any]) -> dict[str, Any]:
+    from automation_miner.readers import build_registry
+
+    registry = build_registry(load_config(root).readers)
+    return {
+        "readers": [
+            {
+                "name": row.name,
+                "suffixes": list(row.suffixes),
+                "media_type": row.media_type,
+                "available": row.available,
+                "reason": row.reason,
+                "source": row.source,
+            }
+            for row in registry.describe()
+        ],
+        "formats": list(registry.suffixes),
+        "errors": registry.errors,
+    }
+
+
 def _reindex(root: Path, args: dict[str, Any]) -> dict[str, Any]:
     registry = reindex(root)
     return {"registry": str(root / "registry.json"), "stats": registry["stats"]}
@@ -168,6 +216,8 @@ HANDLERS = {
     "get_opportunity": _get_opportunity,
     "query_registry": _query_registry,
     "get_run_report": _get_run_report,
+    "get_run_summary": _get_run_summary,
+    "list_readers": _list_readers,
     "reindex": _reindex,
     "server_info": _server_info,
 }
@@ -210,17 +260,35 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
         "properties": {"run_id": {"type": "string"}},
         "required": ["run_id"],
     },
+    "get_run_summary": {
+        "type": "object",
+        "properties": {"run_id": {"type": "string"}},
+        "required": ["run_id"],
+    },
+    "list_readers": {"type": "object", "properties": {}},
     "reindex": {"type": "object", "properties": {}},
     "server_info": {"type": "object", "properties": {}},
 }
 
 TOOL_DESCRIPTIONS = {
-    "mine_domain": "Run the full mining pipeline over a domain; returns run summary + artifact paths.",
+    "mine_domain": (
+        "Run the full mining pipeline over a domain. Returns the compact run summary "
+        "inline (per-opportunity ICE, tier, filters, eligibility) plus artifact paths."
+    ),
     "list_runs": "List all mining run ids in the workspace.",
     "list_domains": "List all domains in the registry with totals and top ICE.",
     "get_opportunity": "Return the full AM-XXX opportunity brief markdown.",
     "query_registry": "Query registry entries filtered by layer, min ICE, status, or domain.",
     "get_run_report": "Return the report.md content of one run.",
+    "get_run_summary": (
+        "Return the compact summary.json of one run: portfolio stats, context stats, "
+        "token usage, and one row per opportunity. Prefer this over get_run_report "
+        "when deciding what to act on."
+    ),
+    "list_readers": (
+        "List document readers, the file formats each handles, and whether its "
+        "dependencies are installed."
+    ),
     "reindex": "Rebuild registry.json from the opps/ tree.",
     "server_info": "Server version, active model routing, workspace path.",
 }

@@ -1,29 +1,50 @@
-"""Input normalization: idea string, file, or KB folder -> ContextPacket.
+"""Input normalization: idea string, file, or KB folder → ContextPacket.
 
-Everything is bounded by a ~40k character budget. Oversized KB folders are
-digested per-file via the mapper role (map-reduce), then merged.
+Every input becomes a numbered evidence index (a :class:`Chunk` list) plus a
+budget-bounded ``overview`` used for domain mapping. Downstream stages select
+the chunks relevant to their own question instead of receiving one shared blob.
+
+Failure handling is per-file. A malformed ``.json``, a password-protected PDF, a
+file over the size cap, or a format with no available reader is recorded in
+``skipped`` with a reason and the run continues — previously any one of those
+aborted ingestion of the entire folder.
+
+Oversized single files are digested like knowledge bases rather than hard-cut:
+a 220k-char brief used to be truncated mid-sentence to 18% of its content with
+nothing but a boolean to show for it.
 """
 
 from __future__ import annotations
 
-import json
 import re
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-import yaml
-
-from automation_miner.prompts import digest_prompt
-from automation_miner.schemas import ContextPacket
+from automation_miner.context import (
+    ContextBudget,
+    chunk_documents,
+    estimate_tokens,
+    fit_text,
+    render_chunks,
+)
+from automation_miner.digest import DigestCache, digest_evidence
+from automation_miner.readers import (
+    ReaderError,
+    ReaderRegistry,
+    Segment,
+    SourceDocument,
+    build_registry,
+)
+from automation_miner.schemas import Chunk, ContextPacket, ContextStats, SkippedFile
 
 if TYPE_CHECKING:
     from automation_miner.models.client import MinerModel
 
-TOKEN_BUDGET_CHARS = 40_000
-DIGEST_CHUNK_CHARS = 12_000
 MAX_DOMAIN_CHARS = 200
 MAX_SLUG_CHARS = 80
-SUPPORTED_SUFFIXES = {".md", ".txt", ".json", ".yaml", ".yml"}
+# Bound on how much of a tree one run will walk, so a symlink loop or an
+# accidentally huge folder fails loudly instead of hanging.
+MAX_KB_FILES = 5_000
 
 
 def slugify(text: str) -> str:
@@ -33,117 +54,261 @@ def slugify(text: str) -> str:
     return text.strip("-")[:MAX_SLUG_CHARS].rstrip("-") or "domain"
 
 
-def _read_file(path: Path) -> str:
-    text = path.read_text(encoding="utf-8")
-    if path.suffix == ".json":
-        return json.dumps(json.loads(text), indent=2)
-    if path.suffix in {".yaml", ".yml"}:
-        return json.dumps(yaml.safe_load(text), indent=2, default=str)
-    return text
+def _clean_domain(value: str) -> str:
+    return " ".join(value.split()).strip()[:MAX_DOMAIN_CHARS] or "untitled-domain"
 
 
-def _packet(
+def _enumerate_files(folder: Path) -> tuple[list[Path], list[SkippedFile]]:
+    """List candidate files, refusing to follow directory symlinks out of the tree."""
+    files: list[Path] = []
+    skipped: list[SkippedFile] = []
+    root = folder.resolve()
+    for path in sorted(folder.rglob("*")):
+        if len(files) >= MAX_KB_FILES:
+            skipped.append(
+                SkippedFile(
+                    path=str(path),
+                    reason=f"knowledge base exceeds the {MAX_KB_FILES} file limit",
+                )
+            )
+            break
+        if path.is_dir():
+            continue
+        try:
+            resolved = path.resolve()
+        except OSError as exc:
+            skipped.append(SkippedFile(path=str(path), reason=f"cannot resolve path: {exc}"))
+            continue
+        if not resolved.is_relative_to(root):
+            skipped.append(
+                SkippedFile(path=str(path), reason="symlink points outside the knowledge base")
+            )
+            continue
+        if not path.is_file():
+            continue
+        files.append(path)
+    return files, skipped
+
+
+def _read_all(
+    paths: list[Path], registry: ReaderRegistry
+) -> tuple[list[SourceDocument], list[SkippedFile]]:
+    """Extract every file, isolating failures so one bad file cannot end the run."""
+    documents: list[SourceDocument] = []
+    skipped: list[SkippedFile] = []
+    for path in paths:
+        try:
+            document = registry.read(path)
+        except ReaderError as exc:
+            reader = registry.reader_for(path)
+            skipped.append(
+                SkippedFile(
+                    path=str(path),
+                    reason=str(exc),
+                    reader=getattr(reader, "name", "") if reader else "",
+                )
+            )
+            continue
+        except Exception as exc:  # a plugin reader may raise anything
+            skipped.append(
+                SkippedFile(path=str(path), reason=f"{type(exc).__name__}: {exc}")
+            )
+            continue
+        if not document.segments:
+            skipped.append(
+                SkippedFile(path=str(path), reason="no text extracted", reader=document.reader)
+            )
+            continue
+        documents.append(document)
+    return documents, skipped
+
+
+def _build_packet(
+    *,
     domain: str,
-    content: str,
     source_kind: str,
+    documents: list[SourceDocument],
+    skipped: list[SkippedFile],
     constraints: str,
-    files: list[str] | None = None,
-    digested: bool = False,
+    budget: ContextBudget,
+    model: MinerModel | None,
+    cache_root: Path | None,
+    reader_errors: list[str],
 ) -> ContextPacket:
-    domain = " ".join(domain.split()).strip()[:MAX_DOMAIN_CHARS] or "untitled-domain"
+    """Chunk, digest if over budget, and assemble the packet with its stats."""
+    source_chars = sum(document.chars for document in documents)
+    chunks: list[Chunk] = chunk_documents(documents, budget)
+    raw_tokens = sum(chunk.tokens for chunk in chunks)
+
+    digested = False
     truncated = False
-    if len(content) > TOKEN_BUDGET_CHARS:
-        content = content[:TOKEN_BUDGET_CHARS] + "\n\n[... truncated to fit context budget ...]"
-        truncated = True
-    return ContextPacket(
-        domain=domain,
-        domain_slug=slugify(domain),
-        constraints=constraints,
-        source_kind=source_kind,  # type: ignore[arg-type]
-        content=content,
-        files=files or [],
+    digest_calls = 0
+    cache_hits = 0
+
+    if raw_tokens > budget.evidence_tokens:
+        if model is not None:
+            outcome = digest_evidence(
+                chunks,
+                model,
+                budget,
+                DigestCache(cache_root / "digests" if cache_root else None),
+            )
+            chunks = outcome.chunks
+            digested = outcome.digested
+            digest_calls = outcome.calls
+            cache_hits = outcome.cache_hits
+        if sum(chunk.tokens for chunk in chunks) > budget.evidence_tokens:
+            from automation_miner.digest import trim_to_budget
+
+            before = len(chunks)
+            chunks = trim_to_budget(chunks, budget.evidence_tokens)
+            truncated = len(chunks) < before
+
+    evidence_chars = sum(len(chunk.text) for chunk in chunks)
+    evidence_tokens = sum(chunk.tokens for chunk in chunks)
+    overview = fit_text(render_chunks(chunks), budget.map_tokens)
+
+    stats = ContextStats(
+        source_files=len(documents) + len(skipped),
+        included_files=len(documents),
+        skipped_files=len(skipped),
+        source_chars=source_chars,
+        evidence_chars=evidence_chars,
+        evidence_tokens=evidence_tokens,
+        budget_tokens=budget.evidence_tokens,
+        budget_used_pct=round(
+            100 * evidence_tokens / budget.evidence_tokens, 1
+        )
+        if budget.evidence_tokens
+        else 0.0,
+        # Clamped at 100: chunk overlap deliberately duplicates a little text, so
+        # the raw ratio can exceed 1. This metric answers "was evidence lost?",
+        # not "how many characters are we shipping".
+        retention_pct=(
+            min(100.0, round(100 * evidence_chars / source_chars, 1))
+            if source_chars
+            else 100.0
+        ),
+        chunks=len(chunks),
         digested=digested,
         truncated=truncated,
+        digest_calls=digest_calls,
+        digest_cache_hits=cache_hits,
+    )
+    cleaned = _clean_domain(domain)
+    return ContextPacket(
+        domain=cleaned,
+        domain_slug=slugify(cleaned),
+        constraints=constraints,
+        source_kind=source_kind,  # type: ignore[arg-type]
+        overview=overview,
+        chunks=chunks,
+        files=[document.path for document in documents],
+        skipped=skipped,
+        reader_errors=reader_errors,
+        stats=stats,
     )
 
 
-def ingest_idea(idea: str, constraints: str = "") -> ContextPacket:
+def ingest_idea(
+    idea: str,
+    constraints: str = "",
+    budget: ContextBudget | None = None,
+) -> ContextPacket:
     """Use a raw idea/domain string directly as context."""
     content = idea.strip()
     if not content:
         raise ValueError("Idea input must not be empty")
-    domain = content.splitlines()[0].strip()
-    return _packet(domain, content, "idea", constraints)
+    budget = budget or ContextBudget()
+    document = SourceDocument(
+        path="<idea>",
+        reader="idea",
+        media_type="text",  # type: ignore[arg-type]
+        segments=[Segment(text=content)],
+    )
+    packet = _build_packet(
+        domain=content.splitlines()[0],
+        source_kind="idea",
+        documents=[document],
+        skipped=[],
+        constraints=constraints,
+        budget=budget,
+        model=None,
+        cache_root=None,
+        reader_errors=[],
+    )
+    return packet.model_copy(update={"files": []})
 
 
-def ingest_file(path: Path, constraints: str = "") -> ContextPacket:
-    """Read one md/txt/json/yaml file as context."""
+def ingest_file(
+    path: Path,
+    constraints: str = "",
+    model: MinerModel | None = None,
+    budget: ContextBudget | None = None,
+    registry: ReaderRegistry | None = None,
+    cache_root: Path | None = None,
+) -> ContextPacket:
+    """Read one file of any registered format as context."""
     if not path.is_file():
         raise ValueError(f"Input file does not exist or is not a file: {path}")
-    if path.suffix.lower() not in SUPPORTED_SUFFIXES:
-        raise ValueError(f"Unsupported file type: {path.suffix}")
-    content = _read_file(path)
-    return _packet(path.stem, content, "file", constraints, files=[str(path)])
+    registry = registry or build_registry()
+    budget = budget or ContextBudget()
+    try:
+        document = registry.read(path)
+    except ReaderError as exc:
+        raise ValueError(f"Cannot read {path}: {exc}") from exc
+    if not document.segments:
+        raise ValueError(f"No text could be extracted from {path}")
+    return _build_packet(
+        domain=path.stem,
+        source_kind="file",
+        documents=[document],
+        skipped=[],
+        constraints=constraints,
+        budget=budget,
+        model=model,
+        cache_root=cache_root,
+        reader_errors=list(registry.errors),
+    )
 
 
-def ingest_kb(folder: Path, constraints: str = "", model: MinerModel | None = None) -> ContextPacket:
-    """Normalize a knowledge-base folder into one bounded context packet.
-
-    Files are enumerated sorted. If the concatenation exceeds the budget and a
-    model is available, each file is digested via the mapper role (map), then
-    the digests are merged (reduce) and budget-truncated.
-    """
+def ingest_kb(
+    folder: Path,
+    constraints: str = "",
+    model: MinerModel | None = None,
+    budget: ContextBudget | None = None,
+    registry: ReaderRegistry | None = None,
+    cache_root: Path | None = None,
+) -> ContextPacket:
+    """Normalize a knowledge-base folder into one bounded evidence index."""
     if not folder.is_dir():
         raise ValueError(f"Knowledge-base folder does not exist or is not a directory: {folder}")
-    files = sorted(
-        p for p in folder.rglob("*") if p.is_file() and p.suffix.lower() in SUPPORTED_SUFFIXES
+    registry = registry or build_registry()
+    budget = budget or ContextBudget()
+
+    candidates, walk_skips = _enumerate_files(folder)
+    if not candidates:
+        raise ValueError(f"No files found in {folder}")
+
+    documents, read_skips = _read_all(candidates, registry)
+    skipped = walk_skips + read_skips
+    if not documents:
+        reasons = "; ".join(f"{Path(s.path).name}: {s.reason}" for s in skipped[:5])
+        raise ValueError(f"No readable files in {folder}. Skipped: {reasons}")
+
+    return _build_packet(
+        domain=folder.name,
+        source_kind="kb",
+        documents=documents,
+        skipped=skipped,
+        constraints=constraints,
+        budget=budget,
+        model=model,
+        cache_root=cache_root,
+        reader_errors=list(registry.errors),
     )
-    if not files:
-        raise ValueError(f"No supported files (.md/.txt/.json/.yaml) found in {folder}")
-
-    documents = [(f, _read_file(f)) for f in files]
-    parts = [f"=== {f.name} ===\n{text}" for f, text in documents]
-    content = "\n\n".join(parts)
-
-    digested = False
-    if len(content) > TOKEN_BUDGET_CHARS and model is not None:
-        content = _digest_documents(documents, model)
-        digested = True
-
-    return _packet(
-        folder.name,
-        content,
-        "kb",
-        constraints,
-        files=[str(f) for f in files],
-        digested=digested,
-    )
 
 
-def _digest_documents(documents: list[tuple[Path, str]], model: MinerModel) -> str:
-    """Map bounded chunks, then hierarchically reduce digests to the context budget."""
-    digests: list[str] = []
-    for path, content in documents:
-        chunks = [
-            content[offset : offset + DIGEST_CHUNK_CHARS]
-            for offset in range(0, len(content), DIGEST_CHUNK_CHARS)
-        ] or [""]
-        for index, chunk in enumerate(chunks, 1):
-            label = path.name if len(chunks) == 1 else f"{path.name} (part {index}/{len(chunks)})"
-            digest = model.chat("mapper", "", digest_prompt(label, chunk))
-            digests.append(f"=== {label} ===\n{digest}")
-
-    content = "\n\n".join(digests)
-    round_no = 1
-    while len(content) > TOKEN_BUDGET_CHARS:
-        reduced = []
-        for offset in range(0, len(content), DIGEST_CHUNK_CHARS):
-            chunk = content[offset : offset + DIGEST_CHUNK_CHARS]
-            label = f"digest reduction {round_no}.{len(reduced) + 1}"
-            reduced.append(model.chat("mapper", "", digest_prompt(label, chunk)))
-        candidate = "\n\n".join(reduced)
-        if len(candidate) >= len(content):
-            break
-        content = candidate
-        round_no += 1
-    return content
+def evidence_tokens(packet: ContextPacket) -> int:
+    """Token size of a packet's evidence index."""
+    return sum(estimate_tokens(chunk.text) for chunk in packet.chunks)

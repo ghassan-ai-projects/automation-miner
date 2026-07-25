@@ -1,7 +1,7 @@
 .PHONY: sync test lint dry-run
 
 sync:
-	uv sync
+	uv sync --all-extras
 
 test:
 	uv run pytest

@@ -18,13 +18,21 @@ dependencies = [
 
 [project.optional-dependencies]
 mcp = ["mcp"]
+# Document readers. Each format is independently installable so a run only
+# pays for the parsers it needs; missing ones are reported, never silent.
+pdf = ["pypdf>=4"]
+docx = ["python-docx>=1"]
+xlsx = ["openpyxl>=3"]
+pptx = ["python-pptx>=1"]
+readers = ["pypdf>=4", "python-docx>=1", "openpyxl>=3", "python-pptx>=1"]
+all = ["mcp", "pypdf>=4", "python-docx>=1", "openpyxl>=3", "python-pptx>=1"]
 
 [project.scripts]
 automation-miner = "automation_miner.cli.main:main"
 automation-miner-mcp = "automation_miner.mcp.server:main"
 
 [dependency-groups]
-dev = ["pytest", "ruff"]
+dev = ["pytest", "ruff", "pypdf>=4", "python-docx>=1", "openpyxl>=3", "python-pptx>=1"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/automation_miner"]
