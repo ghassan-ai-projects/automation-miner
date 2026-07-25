@@ -25,6 +25,7 @@ def test_full_run_dry(workspace: Path) -> None:
         "context.json",
         "domain_map.json",
         "opportunities.json",
+        "summary.json",
         "run.json",
         "run.md",
         "report.md",
@@ -45,7 +46,10 @@ def test_full_run_dry(workspace: Path) -> None:
 
     # ICE math is deterministic (mock scorer: 4/4/4)
     assert all(o["ice"] == 64 for o in opps)
-    assert all(o["score"]["rationale"] for o in opps)
+    assert all(o["tier"] == "high" for o in opps)
+    for opp in opps:
+        for factor in ("impact_rationale", "confidence_rationale", "ease_rationale"):
+            assert opp["score"][factor], factor
 
     # Draft iterations persisted (mock critic passes at v1)
     drafts = list((run_dir / "drafts").glob("AM-*.v1.json"))
@@ -65,6 +69,9 @@ def test_full_run_dry(workspace: Path) -> None:
     report = (run_dir / "report.md").read_text(encoding="utf-8")
     assert "| 1 | AM-001 |" in report
     assert "Low-hanging fruit" in report
+    assert "German healthcare back office" in report
+    assert "## Recommended Sequence" in report
+    assert "Model calls:" in report
     run_md = (run_dir / "run.md").read_text(encoding="utf-8")
     assert "# Automation Mining Run" in run_md
     assert "## Phase 1: Domain Map" in run_md
@@ -121,7 +128,70 @@ def test_run_with_kb_input(workspace: Path, tmp_path: Path) -> None:
     result = run_mine(workspace_path=workspace, kb=kb, dry_run=True)
     ctx = read_json(Path(result["run_dir"]) / "context.json")
     assert ctx["source_kind"] == "kb"
-    assert "Manual reporting" in ctx["content"]
+    assert "Manual reporting" in ctx["overview"]
+    assert ctx["chunks"][0]["id"] == "S1"
+    assert ctx["stats"]["included_files"] == 1
+
+
+def test_run_with_mixed_format_kb(workspace: Path, tmp_path: Path) -> None:
+    """Every registered format contributes, and unreadable files are reported."""
+    pytest.importorskip("pypdf")
+    from test_readers import make_pdf
+
+    kb = tmp_path / "kb"
+    kb.mkdir()
+    (kb / "sop.md").write_text("# SOP\n\n400 claims/day by hand.", encoding="utf-8")
+    (kb / "rules.pdf").write_bytes(make_pdf(["Audit trail retained 10 years."]))
+    (kb / "volumes.csv").write_text(
+        "month,claims\n2026-01,8000\n2026-02,8100\n", encoding="utf-8"
+    )
+    (kb / "broken.json").write_text('{"a": [1,', encoding="utf-8")
+    (kb / "logo.png").write_bytes(b"\x89PNG\r\n\x1a\n" + bytes(range(256)))
+
+    result = run_mine(workspace_path=workspace, kb=kb, dry_run=True)
+    ctx = read_json(Path(result["run_dir"]) / "context.json")
+
+    assert ctx["stats"]["included_files"] == 4
+    assert ctx["stats"]["skipped_files"] == 1
+    sources = {chunk["source"] for chunk in ctx["chunks"]}
+    assert sources == {"sop.md", "rules.pdf", "volumes.csv", "broken.json"}
+    assert any(c["locator"] == "p.1" for c in ctx["chunks"])
+
+    report = (Path(result["run_dir"]) / "report.md").read_text(encoding="utf-8")
+    assert "## Files Not Read" in report
+    assert "logo.png" in report
+
+
+def test_evidence_refs_resolve_against_the_index(workspace: Path, tmp_path: Path) -> None:
+    kb = tmp_path / "kb"
+    kb.mkdir()
+    (kb / "notes.md").write_text("# Notes\n\nManual rework costs 4h/week.", encoding="utf-8")
+    result = run_mine(workspace_path=workspace, kb=kb, dry_run=True)
+    opps = result["opportunities"]
+    assert all(o["draft"]["evidence_refs"] for o in opps)
+    assert all(o["unresolved_refs"] == [] for o in opps)
+
+
+def test_stage_failure_writes_error_json(workspace: Path, monkeypatch) -> None:
+    """A failed stage used to leave context.json and no explanation."""
+    from automation_miner.models.client import MinerModel
+
+    original = MinerModel.call_json
+
+    def explode(self, role, system, prompt, schema):  # type: ignore[no-untyped-def]
+        if role == "layer_analyst":
+            raise RuntimeError("simulated provider outage")
+        return original(self, role, system, prompt, schema)
+
+    monkeypatch.setattr(MinerModel, "call_json", explode)
+    with pytest.raises(Exception, match="simulated provider outage"):
+        run_mine(workspace_path=workspace, idea="Failing domain", dry_run=True)
+
+    run_dirs = list((workspace / "runs").iterdir())
+    error = read_json(run_dirs[0] / "error.json")
+    assert error["stage"] == "layer_analysis"
+    assert "simulated provider outage" in error["error"]
+    assert "context.json" in error["artifacts_written"]
 
 
 def test_opportunities_json_filters(workspace: Path) -> None:
@@ -150,11 +220,124 @@ def test_invalid_iteration_count_fails_before_creating_run(
     assert not (workspace / "runs").exists()
 
 
-def test_urgent_constraint_publishes_only_top_three(workspace: Path) -> None:
+def test_urgent_constraint_publishes_three_and_retains_the_rest(workspace: Path) -> None:
     result = run_mine(
         workspace_path=workspace,
         idea="Urgent domain",
         constraints="urgent, needed in 1 week",
         dry_run=True,
     )
-    assert len(result["opportunities"]) == 3
+    opps = result["opportunities"]
+    published = [o for o in opps if o["eligibility"] == "published"]
+    filtered = [o for o in opps if o["eligibility"] == "filtered"]
+
+    # All five are retained; only three reach publication.
+    assert len(opps) == 5
+    assert len(published) == 3
+    assert len(filtered) == 2
+    assert all(o["exclusion_reasons"] for o in filtered)
+
+    # Briefs are written only for the published set.
+    briefs = sorted((workspace / "opps" / "urgent-domain").glob("AM-*.md"))
+    assert len(briefs) == 3
+
+    # And the report explains what was held back rather than hiding it.
+    report = (Path(result["run_dir"]) / "report.md").read_text(encoding="utf-8")
+    assert "## Excluded by Constraint Policy" in report
+    assert "urgent timeline publishes only the top 3" in report
+
+
+def test_summary_json_is_the_compact_view(workspace: Path) -> None:
+    result = run_mine(
+        workspace_path=workspace, idea="Summary domain", constraints="budget:low", dry_run=True
+    )
+    summary = read_json(Path(result["run_dir"]) / "summary.json")
+
+    assert summary["domain"] == "Summary domain"
+    assert summary["constraints"] == "budget:low"
+    assert summary["dry_run"] is True
+    assert summary["stats"]["published"] == 5
+    assert summary["context"]["chunks"] >= 1
+    assert summary["usage"]["calls"] > 0
+    assert summary["notes"], "budget:low must be recorded as an active policy"
+
+    entry = summary["opportunities"][0]
+    assert set(entry) >= {"am_id", "title", "layer", "ice", "tier", "filters", "problem"}
+    assert entry["filters"] == ["low_hanging", "high_value"]
+
+
+def test_run_manifest_records_usage_and_stage_timings(workspace: Path) -> None:
+    result = run_mine(workspace_path=workspace, idea="Telemetry domain", dry_run=True)
+    manifest = read_json(Path(result["run_dir"]) / "run.json")
+
+    assert manifest["usage"]["calls"] > 0
+    assert manifest["usage"]["by_role"]["drafter"]["calls"] == 5
+    assert set(manifest["stage_seconds"]) >= {"ingest", "domain_map", "score", "publish"}
+    assert manifest["context"]["chunks"] >= 1
+    assert manifest["filtered"] == []
+
+
+def test_parallel_stages_are_deterministic(workspace: Path, tmp_path: Path) -> None:
+    """Critique and scoring fan out over threads; order must not vary."""
+    from automation_miner.models.client import MinerModel
+    from automation_miner.models.config import load_config
+
+    def run(root: Path, workers: int) -> list[str]:
+        config = load_config(None)
+        config.concurrency = {"critique": workers, "score": workers}
+        model = MinerModel(config, dry_run=True)
+        try:
+            result = run_mine(
+                workspace_path=root, idea="Deterministic domain", dry_run=True, model=model
+            )
+        finally:
+            model.close()
+        return [o["am_id"] for o in result["opportunities"]]
+
+    serial = run(tmp_path / "serial", workers=1)
+    parallel = run(tmp_path / "parallel", workers=5)
+    assert serial == parallel == [f"AM-{i:03d}" for i in range(1, 6)]
+
+
+def test_layer_analysts_receive_layer_specific_evidence(
+    workspace: Path, tmp_path: Path
+) -> None:
+    """Each layer used to receive the same undifferentiated blob."""
+    from automation_miner.models.client import MinerModel
+    from automation_miner.models.config import load_config
+
+    kb = tmp_path / "kb"
+    kb.mkdir()
+    (kb / "forms.md").write_text(
+        "# Forms\n\n" + "Clerks fill approval forms and re-key spreadsheet data. " * 40,
+        encoding="utf-8",
+    )
+    (kb / "alerts.md").write_text(
+        "# Alerts\n\n" + "Nobody monitors the dashboard; incidents surface late. " * 40,
+        encoding="utf-8",
+    )
+
+    prompts: dict[str, str] = {}
+    original = MinerModel.call_json
+
+    def capture(self, role, system, prompt, schema):  # type: ignore[no-untyped-def]
+        if role == "layer_analyst":
+            layer = prompt.split("\n", 1)[0].removeprefix("Layer: ").strip()
+            prompts[layer] = prompt
+        return original(self, role, system, prompt, schema)
+
+    config = load_config(None)
+    config.context = {"evidence_tokens": 4_000, "layer_tokens": 300, "chunk_tokens": 120}
+    model = MinerModel(config, dry_run=True)
+    try:
+        MinerModel.call_json = capture  # type: ignore[method-assign]
+        run_mine(workspace_path=workspace, kb=kb, dry_run=True, model=model)
+    finally:
+        MinerModel.call_json = original  # type: ignore[method-assign]
+        model.close()
+
+    assert set(prompts) == {layer.value for layer in LAYER_ORDER}
+    # The document analyst sees the forms file; the monitoring analyst sees alerts.
+    assert "approval forms" in prompts["document"]
+    assert "dashboard" in prompts["monitoring"]
+    assert prompts["document"] != prompts["monitoring"]

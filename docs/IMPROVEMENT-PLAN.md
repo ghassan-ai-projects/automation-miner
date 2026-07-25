@@ -159,7 +159,76 @@ New module `src/automation_miner/context.py` owning all budget and evidence logi
 
 ---
 
-## 3. Compatibility
+## 3. Results
+
+All 27 items are implemented. Measurements below are from the same dry-run harness
+used for §1, so they are directly comparable.
+
+### Context
+
+| | v3 | v4 |
+|---|---|---|
+| 8-file / 49k-char KB — evidence retained | 1,894 chars (**6.2%**) | 52,048 chars (**100%**, fits budget) |
+| 8-file KB — context budget used | ~5% | 24% (no digest needed) |
+| 60-file / 366k-char KB — evidence retained | would digest to ~4% | 181,190 chars (**48.8%**) |
+| 60-file KB — budget used | ~5% | **83.9%** |
+| 220k-char single file | hard cut to 40k (18%), mid-sentence | digested to budget |
+| Malformed `.json` in a KB | `JSONDecodeError`, run aborts | skipped with reason, run continues |
+| latin-1 file | `UnicodeDecodeError`, run aborts | decoded as cp1252, characters intact |
+| Unreadable files | silently dropped | listed in `context.json` + report |
+| Formats supported | 5 | 20 across 9 readers, extensible via plugins |
+| Re-mining the same KB | re-pays every digest call | 40 calls → 21 (digest cache) |
+
+### Scoring and output
+
+| | v3 | v4 |
+|---|---|---|
+| Deterministic validation | `calibrate()` unreachable — validated nothing | 6 coherence rules against the draft's own estimates |
+| Constraint phrasings recording an override | 2 of 8 | 8 of 8 |
+| `urgent` on a 6-opportunity pool | 3 published, 3 **deleted** | 3 published, 3 retained with reasons |
+| Equal-ICE ordering | upstream insertion order | total order, reproducible either way round |
+| Score rationale in the brief | absent | per-factor, plus tier, critic score, calibrations |
+| Evidence provenance | none | `[S12] claims.pdf p.4`, cited and code-verified |
+| Agent-facing run artifact | none (markdown or full drafts) | `summary.json`, returned inline by MCP |
+| Cost telemetry | none | per-role calls, retries, tokens |
+
+### Cost went up, and that is the intended trade
+
+Prompt volume on the 8-file benchmark rose from **163,523 to 277,640 characters
+(+70%)**, despite call count falling from 29 to 21.
+
+This is not a regression to fix — it is the direct consequence of no longer discarding
+the input. v3 was cheap on that benchmark because its digester had compressed 49k chars
+of evidence down to 1,894 before any analysis ran; every downstream prompt was small
+because there was almost nothing left to send. v4 keeps the evidence and spends tokens
+reasoning over it.
+
+Two honest corrections to §1 while recording this:
+
+- **C7 overstated the critique loop's share of v3 cost.** The structural criticism was
+  right — evidence was rebuilt per opportunity per round — but in that measurement the
+  dominant line was the 8 sequential digest calls (50,000 chars), not the critic
+  (32,799 chars across 5 calls). The critique loop only becomes dominant at higher
+  opportunity counts and iteration depth.
+- The first v4 implementation made the critic the largest cost line (195,587 chars
+  across 5 calls) by giving it a 10,000-token evidence budget. Since that budget
+  multiplies by opportunities × rounds and the critic only needs to verify one draft
+  against the evidence it cites (which is pinned into its pack), the default is now
+  6,000 — a 22% reduction in total prompt volume.
+
+Where cost is genuinely reduced: the digest cache removes ingestion cost entirely on
+re-runs, retry-with-backoff stops a single 429 from discarding a run's already-paid
+calls, and per-role `max_tokens` stops the drafter truncating into unparseable JSON and
+burning three retries.
+
+### Tests
+
+97 → 242, all offline. New coverage: reader subsystem and plugin discovery (37),
+context budgeting and BM25 selection (28), retry/backoff and telemetry (13), scoring
+coherence and eligibility (33), rewritten ingest (22), plus brief, report, graph, CLI,
+and MCP additions.
+
+## 4. Compatibility
 
 - Brief frontmatter changes are **additive** (`tier`, `critique`, `iterations`), so the
   existing corpus (ends at AM-377) still reindexes; `registry.json` stays at `v2` shape

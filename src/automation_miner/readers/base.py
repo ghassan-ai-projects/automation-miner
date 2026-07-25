@@ -80,14 +80,6 @@ class SourceDocument(ArtifactModel):
         return separator.join(s.text for s in self.segments if s.text)
 
 
-class SkippedFile(ArtifactModel):
-    """A file the pipeline did not read, and why — never silently dropped."""
-
-    path: str
-    reason: str
-    reader: str = ""
-
-
 class ReaderError(Exception):
     """A reader could not extract this file. Caught per-file, never fatal."""
 

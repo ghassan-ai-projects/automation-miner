@@ -1,7 +1,13 @@
 """Deterministic mock provider — the whole graph runs offline against it.
 
-Every role returns canned, schema-valid JSON. Content is fixed except that the
-active layer is parsed out of the prompt so per-layer artifacts look sane.
+Every role returns canned, schema-valid JSON. Two things are read out of the
+prompt so artifacts look realistic rather than uniform: the active layer, and
+the evidence ids on offer (so drafts cite refs that actually resolve).
+
+The digest mock honours the requested target size. That matters: the real
+failure it stands in for was a digester that ignored its budget and returned 4%
+of it, so a mock that always returned a fixed 200 characters would hide exactly
+the regression these tests exist to catch.
 """
 
 from __future__ import annotations
@@ -10,21 +16,43 @@ import re
 from typing import Any
 
 _LAYER_RE = re.compile(r"^Layer:\s*(\w+)", re.MULTILINE)
+_TARGET_RE = re.compile(r"approximately ([\d,]+) characters")
+_CONTENT_RE = re.compile(r"\nContent:\n(.*)\n\nWrite a dense digest", re.DOTALL)
+_REF_RE = re.compile(r"\[(S\d+)\]")
 
 _LAYERS = ("document", "communication", "decision", "monitoring", "knowledge")
 
 
 def _layer_from_prompt(prompt: str) -> str:
-    m = _LAYER_RE.search(prompt)
-    if m and m.group(1).lower() in _LAYERS:
-        return m.group(1).lower()
+    match = _LAYER_RE.search(prompt)
+    if match and match.group(1).lower() in _LAYERS:
+        return match.group(1).lower()
     return "document"
 
 
-def digest(filename: str, content: str) -> str:
-    """Mapper-role file digest (plain text, not JSON)."""
-    head = " ".join(content.split())[:200]
-    return f"Digest of {filename}: {head}"
+def _refs_from_prompt(prompt: str, limit: int = 3) -> list[str]:
+    """Cite evidence ids that genuinely appear in the prompt."""
+    seen: list[str] = []
+    for ref in _REF_RE.findall(prompt):
+        if ref not in seen:
+            seen.append(ref)
+        if len(seen) >= limit:
+            break
+    return seen
+
+
+def digest(prompt: str) -> str:
+    """Mapper-role digest (plain text). Fills the requested target size."""
+    target_match = _TARGET_RE.search(prompt)
+    target = int(target_match.group(1).replace(",", "")) if target_match else 800
+    content_match = _CONTENT_RE.search(prompt)
+    body = content_match.group(1) if content_match else prompt
+    condensed = " ".join(body.split())
+    if len(condensed) <= target:
+        return condensed
+    head = condensed[:target]
+    cut = head.rfind(". ")
+    return head[: cut + 1] if cut > target // 2 else head
 
 
 def _domain_map() -> dict[str, Any]:
@@ -57,7 +85,7 @@ def _domain_map() -> dict[str, Any]:
     }
 
 
-def _layer_analysis(layer: str) -> dict[str, Any]:
+def _layer_analysis(layer: str, refs: list[str]) -> dict[str, Any]:
     return {
         "layer": layer,
         "findings": [
@@ -69,10 +97,11 @@ def _layer_analysis(layer: str) -> dict[str, Any]:
             f"Errors introduced at {layer} handoff points",
         ],
         "pain_level": "high",
+        "evidence_refs": refs,
     }
 
 
-def _draft(layer: str) -> dict[str, Any]:
+def _draft(layer: str, refs: list[str]) -> dict[str, Any]:
     title = f"Automated {layer.replace('_', ' ').title()} Workflow"
     return {
         "layer": layer,
@@ -160,10 +189,12 @@ def _draft(layer: str) -> dict[str, Any]:
                 "mitigation": "Quarterly rule review with the process owner",
             },
         ],
-        "agents_required": "1 agent with a rule-checking tool",
+        "agent_count": 1,
+        "agent_topology": "single agent with a rule-checking tool",
         "effort": "medium",
         "impact_estimate": "high",
         "risk_level": "medium",
+        "evidence_refs": refs,
     }
 
 
@@ -184,24 +215,26 @@ def _ice() -> dict[str, Any]:
         "impact": 4,
         "confidence": 4,
         "ease": 4,
-        "rationale": (
-            "Department-level transformation with a validated pattern and "
-            "config-plus-API implementation effort."
+        "impact_rationale": (
+            "Cross-department shift: the same workflow blocks operations and reporting."
         ),
+        "confidence_rationale": "Adjacent domain proven: this pattern ships elsewhere.",
+        "ease_rationale": "Configuration plus API wiring against an existing system of record.",
     }
 
 
 def call_json(role: str, schema_name: str, prompt: str) -> dict[str, Any]:
     """Return canned valid JSON for a role + schema pair."""
     layer = _layer_from_prompt(prompt)
+    refs = _refs_from_prompt(prompt)
     if schema_name == "DomainMap":
         return _domain_map()
     if schema_name == "LayerAnalysis":
-        return _layer_analysis(layer)
+        return _layer_analysis(layer, refs)
     if schema_name == "DraftBatch":
-        return {"drafts": [_draft(layer)]}
+        return {"drafts": [_draft(layer, refs)]}
     if schema_name == "OpportunityDraft":
-        return _draft(layer)
+        return _draft(layer, refs)
     if schema_name == "Critique":
         return _critique()
     if schema_name == "ICEScore":

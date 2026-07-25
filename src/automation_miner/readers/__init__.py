@@ -16,10 +16,10 @@ from automation_miner.readers.base import (
     Reader,
     ReaderError,
     Segment,
-    SkippedFile,
     SourceDocument,
     missing_dependency,
 )
+from automation_miner.schemas import SkippedFile
 from automation_miner.readers.documents import DocxReader, PdfReader, PptxReader
 from automation_miner.readers.encoding import decode_bytes, looks_binary
 from automation_miner.readers.registry import (

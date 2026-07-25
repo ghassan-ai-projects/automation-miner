@@ -20,6 +20,7 @@ class MinerState(TypedDict, total=False):
     created: str
     profile: str
     start_ts: float
+    stage_seconds: dict[str, float]
 
     # transient (Send fan-out payloads)
     layer: str
@@ -33,3 +34,4 @@ class MinerState(TypedDict, total=False):
     refined: list[dict[str, Any]]
     opportunities: list[dict[str, Any]]
     report_path: str
+    summary_path: str

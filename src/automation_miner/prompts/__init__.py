@@ -2,15 +2,35 @@
 
 Embeds the domain logic from docs/spec/01-SKILL.md: the five-layer framework
 with signal questions, ICE definitions, constraint rules, and the critic rubric.
+
+Version 2.0 adds the evidence protocol. Every stage receives numbered evidence
+blocks and is asked to cite the ids it relied on, which turns the critic's
+highest-weighted dimension (``groundedness``, 25%) from an unverifiable judgement
+into something code can check: cited ids either exist in the run's evidence index
+or they do not.
 """
 
 from __future__ import annotations
 
-PROMPT_VERSION = "1.0"
+PROMPT_VERSION = "2.0"
 
 # ---------------------------------------------------------------------------
 # Shared framework fragments
 # ---------------------------------------------------------------------------
+
+EVIDENCE_PROTOCOL = """\
+Evidence protocol:
+  Evidence is supplied as numbered blocks, each headed by an id, a source file,
+  and a location inside that file, e.g.
+
+    [S12] claims-sop.md # Claims Handling SOP > ## Intake
+    Clerks receive 400 claims/day by fax into SAP...
+
+  Ground every factual claim in these blocks and list the ids you used in
+  "evidence_refs". Cite only ids that actually appear above. When you must
+  infer something the evidence does not state, say so in the text ("inferred:
+  ...") and do not invent an id for it.
+"""
 
 FIVE_LAYER_FRAMEWORK = """\
 The Five Layers (analyze each orthogonally):
@@ -79,7 +99,7 @@ Constraint Processing (apply when constraints are given):
 
 CRITIC_RUBRIC = """\
 Critic rubric (score each 0-10, weighted):
-  groundedness      25% — every claim traces to domain evidence or is flagged as inference
+  groundedness      25% — every claim traces to a cited evidence id, or is flagged as inference
   specificity       20% — named systems, actors, volumes; no generic filler
   quantified_impact 20% — time/cost/error numbers with assumptions
   feasibility       15% — realistic effort, dependencies, integration path
@@ -88,13 +108,22 @@ Critic rubric (score each 0-10, weighted):
 Pass threshold: 7.5 weighted.
 """
 
+AGENT_TOPOLOGY_RULES = """\
+Agent topology:
+  Report "agent_count" as an integer (how many concurrent agents the automation
+  needs) and "agent_topology" as a short phrase describing the coordination
+  pattern — e.g. "single agent with a rule-checking tool", "pipeline: extractor
+  then validator", "supervisor with two workers". Prefer the smallest count that
+  does the job; a single agent with tools beats a swarm.
+"""
+
 # ---------------------------------------------------------------------------
 # Role system prompts
 # ---------------------------------------------------------------------------
 
 MAPPER_SYSTEM = (
     "You are the mapper role of an automation-discovery engine. You compress "
-    "knowledge-base files into faithful, dense digests that preserve concrete "
+    "knowledge-base content into faithful, dense digests that preserve concrete "
     "facts: actors, systems, volumes, pain points, numbers. No commentary."
 )
 
@@ -104,16 +133,19 @@ Build a structured model of the domain: key actors, workflows, information
 flows, pain points. Cover: core function, stakeholders, information flow,
 decision density, compliance surface, technology maturity, scale indicators,
 manual friction, workflow patterns, and each stakeholder's concrete processes.
-Look for handoff points, translation
-points, approval gates, and reporting loops — classic automation targets.
+Look for handoff points, translation points, approval gates, and reporting
+loops — classic automation targets.
+
+{EVIDENCE_PROTOCOL}
 
 {CONSTRAINT_RULES}
 """
 
 LAYER_ANALYST_SYSTEM = f"""\
 You are a layer-analyst role of an automation-discovery engine (Phase 2).
-Analyze the domain through ONE assigned layer only. Ground every finding in
-the provided domain evidence; flag inferences explicitly.
+Analyze the domain through ONE assigned layer only.
+
+{EVIDENCE_PROTOCOL}
 
 {FIVE_LAYER_FRAMEWORK}
 
@@ -129,6 +161,10 @@ risk estimates, quantified impact with assumptions, a phased implementation
 path (MVP 1-2 weeks, expansion 2-4 weeks, autonomy 4-8 weeks), and risks with
 mitigations.
 
+{EVIDENCE_PROTOCOL}
+
+{AGENT_TOPOLOGY_RULES}
+
 {ICE_DEFINITIONS}
 
 {CONSTRAINT_RULES}
@@ -137,22 +173,30 @@ mitigations.
 CRITIC_SYSTEM = f"""\
 You are the critic role of an automation-discovery engine. Score the draft on
 the rubric and give actionable feedback. Be strict: generic filler, ungrounded
-claims, or missing numbers must lower the relevant dimension.
+claims, missing numbers, or evidence ids that do not support the claim they are
+attached to must lower the relevant dimension.
 
 {CRITIC_RUBRIC}
 """
 
-REFINER_SYSTEM = """\
+REFINER_SYSTEM = f"""\
 You are the refiner role of an automation-discovery engine. Rewrite the draft
 so it fully addresses the critique: add grounding, specificity, quantified
 impact, feasibility detail, HITL clarity — whatever scored low. Keep the same
 opportunity identity and schema. Return the complete improved draft.
+
+{EVIDENCE_PROTOCOL}
 """
 
 SCORER_SYSTEM = f"""\
 You are the scorer role of an automation-discovery engine (Phase 4). Propose
-Impact, Confidence, and Ease (1-5 each) with a one-paragraph rationale. Score
-honestly against the reference ladder — do not inflate.
+Impact, Confidence, and Ease (1-5 each), each with its own one-or-two-sentence
+rationale naming the ladder rung you chose and why. Score honestly against the
+reference ladder — do not inflate.
+
+Your factors must be consistent with the draft's own effort, impact, and risk
+estimates: High effort cannot also be Ease 5, and a Low impact_estimate cannot
+also be Impact 5. Code cross-checks this and will record any adjustment.
 
 {ICE_DEFINITIONS}
 """
@@ -162,26 +206,27 @@ honestly against the reference ladder — do not inflate.
 # ---------------------------------------------------------------------------
 
 
-def domain_map_prompt(domain: str, constraints: str, content: str) -> str:
+def domain_map_prompt(domain: str, constraints: str, evidence: str) -> str:
     return (
         f"Domain: {domain}\nConstraints: {constraints or 'none'}\n\n"
-        f"Domain evidence:\n{content}\n\n"
+        f"Domain evidence:\n{evidence}\n\n"
         "Produce the DomainMap JSON."
     )
 
 
-def layer_analysis_prompt(layer: str, domain: str, constraints: str, context: str) -> str:
+def layer_analysis_prompt(layer: str, domain: str, constraints: str, evidence: str) -> str:
     return (
         f"Layer: {layer}\nDomain: {domain}\nConstraints: {constraints or 'none'}\n\n"
-        f"Domain evidence and domain map:\n{context}\n\n"
-        f"Produce the LayerAnalysis JSON for the {layer} layer only."
+        f"Evidence selected as most relevant to the {layer} layer:\n{evidence}\n\n"
+        f"Produce the LayerAnalysis JSON for the {layer} layer only, citing the "
+        "evidence ids you used in evidence_refs."
     )
 
 
 def draft_prompt(
     layer: str,
     analysis_json: str,
-    context: str,
+    evidence: str,
     constraints: str = "",
     domain_map_json: str = "",
 ) -> str:
@@ -189,8 +234,9 @@ def draft_prompt(
         f"Layer: {layer}\nConstraints: {constraints or 'none'}\n\n"
         f"Domain map:\n{domain_map_json}\n\n"
         f"Layer analysis:\n{analysis_json}\n\n"
-        f"Domain context:\n{context}\n\n"
-        "Produce the DraftBatch JSON with 1-2 drafts for this layer."
+        f"Evidence:\n{evidence}\n\n"
+        "Produce the DraftBatch JSON with 1-2 drafts for this layer, each citing "
+        "evidence_refs."
     )
 
 
@@ -198,7 +244,7 @@ def critique_prompt(draft_json: str, other_titles: list[str], evidence: str = ""
     others = ", ".join(other_titles) or "none"
     return (
         f"Other opportunities in this run (for differentiation): {others}\n\n"
-        f"Source evidence for groundedness checks:\n{evidence}\n\n"
+        f"Evidence available for groundedness checks:\n{evidence}\n\n"
         f"Draft under review:\n{draft_json}\n\n"
         "Produce the Critique JSON."
     )
@@ -212,7 +258,7 @@ def refine_prompt(
 ) -> str:
     return (
         f"Constraints: {constraints or 'none'}\n\n"
-        f"Source evidence:\n{evidence}\n\n"
+        f"Evidence:\n{evidence}\n\n"
         f"Current draft:\n{draft_json}\n\nCritique to address:\n{critique_json}\n\n"
         "Produce the refined OpportunityDraft JSON."
     )
@@ -221,13 +267,24 @@ def refine_prompt(
 def score_prompt(draft_json: str, constraints: str) -> str:
     return (
         f"Constraints: {constraints or 'none'}\n\nFinal draft:\n{draft_json}\n\n"
-        "Produce the ICEScore JSON (impact, confidence, ease, rationale)."
+        "Produce the ICEScore JSON: impact, confidence, ease, and one rationale "
+        "per factor (impact_rationale, confidence_rationale, ease_rationale)."
     )
 
 
-def digest_prompt(filename: str, content: str) -> str:
+def digest_prompt(label: str, content: str, target_chars: int) -> str:
+    """Digest one batch toward an explicit size.
+
+    The target is stated because an unbounded "compress this" instruction
+    produced digests at ~4% of the available budget, discarding evidence the
+    pipeline had room to keep.
+    """
     return (
-        f"{filename}\n\nFile content:\n{content}\n\n"
-        "Compress this file into a dense digest preserving actors, systems, "
-        "volumes, pain points, and numbers."
+        f"Source: {label}\n\n"
+        f"Content:\n{content}\n\n"
+        f"Write a dense digest of approximately {target_chars:,} characters — aim "
+        "for that length, do not go far under it. Preserve every concrete fact: "
+        "actors, systems, volumes, frequencies, durations, costs, error rates, "
+        "named pain points, and compliance requirements. Drop only prose padding "
+        "and repetition. No preamble, no commentary."
     )

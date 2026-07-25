@@ -13,7 +13,7 @@ from typing import Any
 
 import yaml
 
-from automation_miner.schemas import OppStatus
+from automation_miner.schemas import OppStatus, Tier
 
 LAYERS = ("document", "communication", "decision", "monitoring", "knowledge")
 ICE_RANGES = ("vision_80plus", "high_60_79", "medium_40_59", "low_under_40")
@@ -70,11 +70,15 @@ def build_registry(base: Path) -> dict[str, Any]:
                     warnings.append({"file": str(f), "reason": f"duplicate opportunity id {am_id}"})
                     continue
                 seen_ids.add(am_id)
+                ice = _int(meta.get("ice-score")) or 0
                 entry: dict[str, Any] = {
                     "i": am_id,
                     "t": str(meta.get("title", f.stem)),
                     "l": str(meta.get("layer", "unknown")),
-                    "ice": _int(meta.get("ice-score")) or 0,
+                    "ice": ice,
+                    # Derived rather than trusted: a brief edited by hand can carry a
+                    # tier that no longer matches its score.
+                    "tr": Tier.for_ice(ice).value,
                     "d": slug,
                     "s": _status(meta.get("status")),
                     "f": str(f),

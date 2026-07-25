@@ -47,6 +47,11 @@ class Workspace:
     def registry_path(self) -> Path:
         return self.root / "registry.json"
 
+    @property
+    def cache_dir(self) -> Path:
+        """Durable cache root (digests), so re-mining a knowledge base is free."""
+        return self.root / ".cache"
+
     def ensure(self) -> None:
         self.runs_dir.mkdir(parents=True, exist_ok=True)
         self.opps_dir.mkdir(parents=True, exist_ok=True)
@@ -132,9 +137,16 @@ class Workspace:
 
     def run_report_path(self, run_id: str) -> Path:
         """Return a report path for a syntactically valid direct run child."""
+        return self._run_file(run_id, "report.md")
+
+    def run_summary_path(self, run_id: str) -> Path:
+        """Return the compact summary path for a validated run id."""
+        return self._run_file(run_id, "summary.json")
+
+    def _run_file(self, run_id: str, name: str) -> Path:
         if not _RUN_ID_RE.fullmatch(run_id):
             raise ValueError(f"Invalid run id: {run_id!r}")
-        return self.runs_dir / run_id / "report.md"
+        return self.runs_dir / run_id / name
 
 
 def normalize_am_id(value: str) -> str:
