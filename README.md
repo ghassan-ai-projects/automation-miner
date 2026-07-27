@@ -2,6 +2,9 @@
 
 > **Author:** [Ghassan Alhamoud](https://ghassan-alhamoud.com)
 
+[![CI](https://github.com/ghassan-ai-projects/automation-miner/actions/workflows/ci.yml/badge.svg)](https://github.com/ghassan-ai-projects/automation-miner/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 Structured domain analysis and automation discovery engine. Give it any industry
 vertical, business process, or operational domain — a one-liner, a brief file, or a
 whole knowledge-base folder — and it produces a ranked portfolio of **AM-XXX
@@ -35,7 +38,11 @@ grounding or constraint violations still block publication and remain visible.
 
 ## Quickstart
 
+Prerequisites: Python 3.12+ and [uv](https://docs.astral.sh/uv/).
+
 ```bash
+git clone https://github.com/ghassan-ai-projects/automation-miner.git
+cd automation-miner
 uv sync
 ```
 
@@ -297,13 +304,30 @@ and the CLI.
 make sync      # uv sync --all-extras
 make test      # uv run pytest (fully offline, mock model)
 make lint      # uv run ruff check src tests
+make build     # build wheel and source distribution
+make ci-check  # lint, test, and build
 make dry-run   # end-to-end smoke run
 ```
 
-Domain logic reference lives in `docs/spec/` (4 phases, 5 layers, ICE scoring,
-constraint rules); the implementation contract is `docs/DESIGN.md`, and
-`docs/IMPROVEMENT-PLAN.md` records the review the current version answers.
+Contributions are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md) before opening
+a pull request.
 
 Runs currently restart from their original input after a failure. Stage artifacts plus
 `error.json` are durable and sufficient for diagnosis, but a public resume command and
 checkpoint compatibility policy are not yet implemented.
+
+## Open source
+
+- [License](LICENSE)
+- [Changelog](CHANGELOG.md)
+- [Contributing guide](CONTRIBUTING.md)
+- [Security policy](SECURITY.md)
+- [Code of conduct](CODE_OF_CONDUCT.md)
+- [Support guide](SUPPORT.md)
+
+Automation Miner is released under the MIT license.
+
+## Status
+
+Current version: `0.1.0` (alpha). Public APIs and artifact schemas may change before
+the first stable release.

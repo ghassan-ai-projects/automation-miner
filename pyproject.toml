@@ -8,13 +8,26 @@ version = "0.1.0"
 description = "Structured domain analysis and automation discovery engine"
 readme = "README.md"
 license = { text = "MIT" }
+authors = [{ name = "Ghassan Alhamoud" }]
 requires-python = ">=3.12"
+keywords = ["automation", "discovery", "langgraph", "mcp"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+]
 dependencies = [
     "langgraph",
     "pydantic>=2",
     "pyyaml",
     "httpx",
 ]
+
+[project.urls]
+Homepage = "https://ghassan-alhamoud.com"
+Repository = "https://github.com/ghassan-ai-projects/automation-miner"
+Issues = "https://github.com/ghassan-ai-projects/automation-miner/issues"
 
 [project.optional-dependencies]
 mcp = ["mcp"]

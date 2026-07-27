@@ -1,7 +1,7 @@
 """Versioned prompt templates per pipeline role.
 
-Embeds the domain logic from docs/spec/01-SKILL.md: the five-layer framework
-with signal questions, ICE definitions, constraint rules, and the critic rubric.
+Contains the five-layer framework, signal questions, ICE definitions, constraint
+rules, and critic rubric used by every model role.
 
 Version 2.0 adds the evidence protocol. Every stage receives numbered evidence
 blocks and is asked to cite the ids it relied on, which turns the critic's

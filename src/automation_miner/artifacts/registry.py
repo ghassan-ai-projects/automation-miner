@@ -1,7 +1,7 @@
-"""registry.json builder — proper port of docs/spec/05-miner-index.py.
+"""Build the compact registry index from published opportunity briefs.
 
 Scans ``opps/<domain-slug>/AM-*.md``, parses YAML frontmatter (pyyaml instead
-of the original regex parser), and builds the compact cross-indexed registry.
+of a regex parser), and builds the compact cross-indexed registry.
 """
 
 from __future__ import annotations
