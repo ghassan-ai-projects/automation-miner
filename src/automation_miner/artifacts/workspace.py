@@ -1,6 +1,6 @@
 """Workspace layout: run directories, JSON artifacts, global AM numbering.
 
-Layout (per DESIGN.md / spec 03):
+Layout:
     <workspace>/registry.json
     <workspace>/runs/<YYYY-MM-DD>_<domain-slug>/...
     <workspace>/opps/<domain-slug>/AM-XXX-<slug>.md

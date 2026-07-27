@@ -260,8 +260,8 @@ def renumber(chunks: Iterable[Chunk], start_index: int = 1) -> list[Chunk]:
 # Relevance
 # ---------------------------------------------------------------------------
 
-# Signal vocabulary per layer, derived from the spec's own signal questions and
-# automation patterns (docs/spec/01-SKILL.md, Phase 2).
+# Signal vocabulary derived from each layer's analysis questions and common
+# automation patterns.
 LAYER_TERMS: dict[Layer, tuple[str, ...]] = {
     Layer.DOCUMENT: (
         "form", "forms", "document", "documents", "spreadsheet", "excel", "csv",

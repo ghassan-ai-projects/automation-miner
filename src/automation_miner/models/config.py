@@ -2,7 +2,7 @@
 
 Config is read from ``miner.toml`` in the workspace, falling back to
 ``~/.config/automation-miner/miner.toml``. Missing config falls back to the
-built-in defaults from DESIGN.md. Env vars override everything:
+built-in defaults. Env vars override everything:
 ``MINER_PROVIDER`` (all roles), ``MINER_MODEL`` (all roles),
 ``MINER_MODEL_<ROLE>`` (one role).
 

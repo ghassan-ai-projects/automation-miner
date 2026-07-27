@@ -332,7 +332,7 @@ class DraftBatch(ArtifactModel):
     drafts: list[OpportunityDraft] = Field(min_length=1, max_length=2)
 
 
-# Critic rubric weights from DESIGN.md (sum to 1.0).
+# Critic rubric weights (sum to 1.0).
 CRITIQUE_WEIGHTS: dict[str, float] = {
     "groundedness": 0.25,
     "specificity": 0.20,
