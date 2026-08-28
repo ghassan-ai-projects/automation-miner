@@ -1,7 +1,7 @@
 # Final bar decision
 
-**Date:** 2026-08-28  
-**Engineering disposition:** MET  
+**Date:** 2026-08-28
+**Engineering disposition:** MET
 **Product-readiness disposition:** NOT CLAIMED — external evidence gap
 
 ## Evidence
