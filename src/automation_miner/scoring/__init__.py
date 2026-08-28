@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import re
 import statistics
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Iterable
 
@@ -67,6 +68,8 @@ class ConstraintPolicy:
     human_payment_approval: bool = False
     agent_limit: int | None = None
     raw: str = ""
+    warnings: tuple[str, ...] = ()
+    advisory_params: tuple[str, ...] = ()
 
     @property
     def active(self) -> bool:
@@ -109,12 +112,151 @@ class ConstraintPolicy:
             notes.append("payments: explicit human approval is mandatory")
         if self.agent_limit is not None:
             notes.append(f"agent limit {self.agent_limit}: larger topologies excluded")
+        notes.extend(self.warnings)
+        if self.advisory_params:
+            names = ", ".join(self.advisory_params)
+            notes.append(f"advisory constraint parameters (not hard policy): {names}")
         return notes
 
 
-def parse_constraint_policy(constraints: str) -> ConstraintPolicy:
-    """Recognize stable constraint phrases without pretending to understand prose."""
+def _active_phrase(text: str, pattern: str) -> bool:
+    """Match a policy phrase while respecting clause-bounded negation."""
+    boundaries = re.compile(r"[.;,\n]|\b(?:but|however|except|although|unless)\b")
+    for match in re.finditer(pattern, text):
+        prior = list(boundaries.finditer(text, 0, match.start()))
+        clause_start = prior[-1].end() if prior else 0
+        following = boundaries.search(text, match.end())
+        clause_end = following.start() if following else len(text)
+        before = text[clause_start : match.start()]
+        after = text[match.end() : clause_end]
+        if re.search(r"(?:not|no|without|never|isn't|aren't)\s+(?:\w+\s+){0,2}$", before):
+            continue
+        if re.search(
+            r"\b(?:do|does|did|is|are|was|were|will|can)\s+not\b|"
+            r"\b(?:don't|doesn't|didn't|isn't|aren't|wasn't|weren't|won't|can't)\b",
+            match.group(0),
+        ):
+            continue
+        if re.match(
+            r"\s+(?:(?:is|are|was|were|do|does|did|will|can)\s+)?"
+            r"(?:not|isn't|aren't|never)\b",
+            after,
+        ):
+            continue
+        if re.match(
+            r"\s+(?:concern|concerns|issue|issues|problem|problems|restriction|"
+            r"restrictions|limitation|limitations)\b",
+            after,
+        ):
+            continue
+        return True
+    return False
+
+
+def _param_bool(params: Mapping[str, str], key: str) -> bool | None:
+    value = params.get(key)
+    if value is None:
+        return None
+    normalized = value.casefold().strip()
+    if normalized in {"1", "true", "yes", "on", "required", "heavy", "strict", "tight"}:
+        return True
+    if normalized in {"0", "false", "no", "off", "none", "unset", "disabled"}:
+        return False
+    return None
+
+
+def parse_constraint_policy(
+    constraints: str, params: Mapping[str, str] | None = None
+) -> ConstraintPolicy:
+    """Build one deterministic policy from prose plus typed parameters.
+
+    Recognized structured parameters override legacy prose. Unknown parameters
+    remain prompt context and are explicitly reported as advisory; they never
+    become execution filters by accident.
+    """
     text = constraints.casefold()
+    warnings: list[str] = []
+    structured: dict[str, str] = {}
+    spellings: dict[str, str] = {}
+    for raw_key, raw_value in (params or {}).items():
+        spelling = str(raw_key).strip()
+        key = spelling.casefold()
+        if key in structured:
+            warnings.append(
+                f"duplicate structured parameter {spelling!r}; "
+                f"keeping {spellings[key]!r}"
+            )
+            continue
+        spellings[key] = spelling
+        structured[key] = str(raw_value).strip()
+
+    low_budget = _active_phrase(
+        text,
+        r"(?:\bbudget\s*[:=]?\s*(?:low|zero|none)\b|\bno\s+budget\b)",
+    )
+    no_coding = _active_phrase(text, r"\bno[- ]?(?:custom\s+dev|coding)\b")
+    compliance = _active_phrase(text, r"\b(?:compliance|regulated)\b")
+    urgent = _active_phrase(
+        text,
+        r"\b(?:urgent|1\s+week|one\s+week|tight\s+timeline)\b|"
+        r"\btimeline\s*[:=]?\s*tight\b",
+    )
+    no_infrastructure = _active_phrase(text, r"\bno\s+(?:existing\s+)?infrastructure\b")
+    mature_stack = _active_phrase(text, r"\b(?:existing\s+)?mature\s+stack\b")
+    eu_data_residency = _active_phrase(
+        text,
+        r"\beu[- ](?:hosted|only)\b|\beu\s+data\s+residen|"
+        r"\bdata.{0,30}(?:remain|stay).{0,15}\beu\b",
+    )
+    human_payment_approval = _active_phrase(
+        text,
+        r"\bpayment(?:s)?\b.{0,30}\b(?:human\s+approval|must|require).{0,20}\bapprov",
+    )
+
+    budget = structured.get("budget")
+    if budget is not None:
+        if budget.casefold() in {"low", "zero", "none"}:
+            low_budget = True
+        elif budget.casefold() in {"medium", "high"}:
+            low_budget = False
+        else:
+            warnings.append(f"unrecognized structured budget {budget!r}; ignored for hard policy")
+
+    bool_keys = {
+        "no_coding": "no_coding",
+        "compliance": "compliance",
+        "urgent": "urgent",
+        "no_infrastructure": "no_infrastructure",
+        "mature_stack": "mature_stack",
+        "eu_data_residency": "eu_data_residency",
+        "human_payment_approval": "human_payment_approval",
+    }
+    values = {
+        "low_budget": low_budget,
+        "no_coding": no_coding,
+        "compliance": compliance,
+        "urgent": urgent,
+        "no_infrastructure": no_infrastructure,
+        "mature_stack": mature_stack,
+        "eu_data_residency": eu_data_residency,
+        "human_payment_approval": human_payment_approval,
+    }
+    for param_key, policy_key in bool_keys.items():
+        if param_key in structured:
+            value = _param_bool(structured, param_key)
+            if value is None:
+                warnings.append(f"unrecognized structured {param_key} value; ignored for hard policy")
+            else:
+                values[policy_key] = value
+    if "timeline" in structured:
+        value = structured["timeline"].casefold()
+        if value in {"tight", "urgent", "asap"}:
+            values["urgent"] = True
+        elif value in {"normal", "loose", "flexible"}:
+            values["urgent"] = False
+        else:
+            warnings.append(f"unrecognized structured timeline {structured['timeline']!r}; ignored")
+
     agent_match = re.search(r"agent[\s_-]*limit\s*[:=]?\s*(\d+)", text)
     team_match = re.search(r"team\s*[:=]?\s*([1-3])(?:\D|$)", text)
     agent_limit = int(agent_match.group(1)) if agent_match else None
@@ -122,35 +264,33 @@ def parse_constraint_policy(constraints: str) -> ConstraintPolicy:
         agent_limit = 1
     if agent_limit is None and ("small team" in text or team_match):
         agent_limit = 2
+    for key in ("agent_limit", "max_agents"):
+        if key in structured:
+            try:
+                candidate = int(structured[key])
+            except ValueError:
+                warnings.append(f"unrecognized structured {key} value; ignored for hard policy")
+            else:
+                if candidate < 1:
+                    warnings.append(f"structured {key} must be at least 1; ignored for hard policy")
+                else:
+                    agent_limit = candidate
+                    break
+    recognized = set(bool_keys) | {"budget", "timeline", "agent_limit", "max_agents"}
+    advisory = tuple(sorted(key for key in structured if key not in recognized))
     return ConstraintPolicy(
-        low_budget=bool(
-            re.search(r"budget\s*[:=]?\s*(?:low|zero|none)", text) or "no budget" in text
-        ),
-        no_coding="no coding" in text or "no custom dev" in text or "no-code" in text,
-        compliance="compliance" in text or "regulated" in text,
-        urgent=bool(
-            "urgent" in text
-            or "1 week" in text
-            or "one week" in text
-            or "tight timeline" in text
-            or re.search(r"timeline\s*[:=]?\s*tight", text)
-        ),
-        no_infrastructure="no existing infrastructure" in text or "no infrastructure" in text,
-        mature_stack="existing mature stack" in text or "mature stack" in text,
-        eu_data_residency=bool(
-            re.search(r"\beu[- ](?:hosted|only)\b", text)
-            or re.search(r"\beu\s+data\s+residen", text)
-            or re.search(r"data.{0,30}(?:remain|stay).{0,15}\beu\b", text)
-        ),
-        human_payment_approval=bool(
-            "payment" in text
-            and (
-                "human approval" in text
-                or re.search(r"payment.{0,30}(?:must|require).{0,20}approv", text)
-            )
-        ),
+        low_budget=values["low_budget"],
+        no_coding=values["no_coding"],
+        compliance=values["compliance"],
+        urgent=values["urgent"],
+        no_infrastructure=values["no_infrastructure"],
+        mature_stack=values["mature_stack"],
+        eu_data_residency=values["eu_data_residency"],
+        human_payment_approval=values["human_payment_approval"],
         agent_limit=agent_limit,
         raw=constraints,
+        warnings=tuple(warnings),
+        advisory_params=advisory,
     )
 
 
@@ -290,9 +430,11 @@ def apply_constraint_overrides(
     return score, risk, applied
 
 
-def ease_first(constraints: str) -> bool:
+def ease_first(
+    constraints: str, constraint_params: Mapping[str, str] | None = None
+) -> bool:
     """Whether constraints force Ease-first ranking (urgent / tight timeline)."""
-    return parse_constraint_policy(constraints).urgent
+    return parse_constraint_policy(constraints, constraint_params).urgent
 
 
 def strategic_filters(opp: Opportunity) -> dict[str, bool]:
@@ -312,6 +454,11 @@ def active_filters(opp: Opportunity) -> list[str]:
 def _exclusions(opp: Opportunity, policy: ConstraintPolicy) -> list[str]:
     """Every reason this opportunity fails the hard portfolio constraints."""
     reasons: list[str] = []
+    if opp.unresolved_refs:
+        reasons.append(
+            "grounding: cited evidence ids do not resolve: "
+            + ", ".join(sorted(opp.unresolved_refs))
+        )
     reasons.extend(f"quality gate: {reason}" for reason in opp.quality_gate_reasons)
     if opp.critique_overall < PUBLICATION_QUALITY_FLOOR:
         reasons.append(
@@ -323,7 +470,8 @@ def _exclusions(opp: Opportunity, policy: ConstraintPolicy) -> list[str]:
         reasons.append(f"budget low/zero requires Ease >= 4 (has {opp.score.ease})")
     if policy.no_coding and opp.score.ease < 4:
         reasons.append(f"no-coding requires Ease >= 4 (has {opp.score.ease})")
-    if policy.compliance and opp.draft.risk_level is Level.HIGH:
+    source_risk = opp.source_risk_level or opp.draft.risk_level
+    if policy.compliance and source_risk is Level.HIGH:
         reasons.append("compliance excludes unresolved high-risk items")
     if policy.no_infrastructure and opp.draft.layer not in {Layer.DOCUMENT, Layer.KNOWLEDGE}:
         reasons.append(
@@ -359,35 +507,49 @@ def _exclusions(opp: Opportunity, policy: ConstraintPolicy) -> list[str]:
             "carrier gateway",
             "twilio",
         )
-        verified_eu_channel = bool(
-            re.search(
-                r"(?:verified|contracted|confirmed|approved)\s+eu[- ]hosted.{0,30}"
-                r"(?:sms|gateway|provider)",
-                draft_text,
+        declared_channels = opp.draft.external_data_channels
+        unverified_declared = [
+            channel.name
+            for channel in declared_channels
+            if not channel.eu_hosting_verified
+        ]
+        if unverified_declared:
+            reasons.append(
+                "EU data residency excludes unverified external data channel(s): "
+                + ", ".join(unverified_declared)
             )
-        )
         proposed = next(
             (channel for channel in external_channels if channel in draft_text),
             "",
         )
-        if proposed and not verified_eu_channel:
+        if proposed and not declared_channels:
             reasons.append(
-                "EU data residency excludes unverified external data channel "
+                "EU data residency requires a structured verified channel declaration; "
+                "unstructured external data channel "
                 f"{proposed!r}"
             )
     if policy.human_payment_approval:
         hitl_text = " ".join(opp.draft.hitl_points).casefold()
-        if not (
-            ("payment" in hitl_text or "invoice" in hitl_text)
-            and re.search(r"\b(?:human|review|approv)", hitl_text)
-        ):
-            reasons.append("payments require an explicit human approval checkpoint")
-        if re.search(
-            r"\b(?:automat(?:e|ed|ically)|autonom(?:ous|ously))"
-            r".{0,30}\b(?:release|execute|send|initiate).{0,15}\bpayment",
-            draft_text,
-        ):
-            reasons.append("payments may not be released autonomously")
+        declared_actions = opp.draft.payment_actions
+        if declared_actions:
+            if any(not action.human_approval_required for action in declared_actions):
+                reasons.append("payments require an explicit human approval checkpoint")
+            if any(action.autonomous for action in declared_actions):
+                reasons.append("payments may not be released autonomously")
+        else:
+            if not (
+                ("payment" in hitl_text or "invoice" in hitl_text)
+                and re.search(r"\b(?:human|review|approv)", hitl_text)
+            ):
+                reasons.append("payments require an explicit human approval checkpoint")
+            if re.search(
+                r"\b(?:automat(?:e|ed|ically)|autonom(?:ous|ously))"
+                r".{0,30}\b(?:release|execute|send|initiate).{0,15}\bpayment",
+                draft_text,
+            ):
+                reasons.append("payments may not be released autonomously")
+            if "payment" in draft_text or "invoice" in draft_text:
+                reasons.append("payment actions require a structured declaration")
     return reasons
 
 
@@ -418,7 +580,9 @@ def sort_key(opp: Opportunity, urgent: bool = False) -> tuple[object, ...]:
 
 
 def apply_portfolio_policy(
-    opportunities: list[Opportunity], constraints: str = ""
+    opportunities: list[Opportunity],
+    constraints: str = "",
+    constraint_params: Mapping[str, str] | None = None,
 ) -> list[Opportunity]:
     """Rank and mark eligibility, retaining every opportunity.
 
@@ -426,7 +590,7 @@ def apply_portfolio_policy(
     rank order. Nothing is discarded: a filtered opportunity was still drafted,
     critiqued, refined and scored, and the operator paid for it.
     """
-    policy = parse_constraint_policy(constraints)
+    policy = parse_constraint_policy(constraints, constraint_params)
     ordered = sorted(opportunities, key=lambda o: sort_key(o, policy.urgent))
 
     marked: list[Opportunity] = []

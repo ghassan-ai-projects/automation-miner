@@ -66,6 +66,11 @@ def test_full_run_dry(workspace: Path) -> None:
     assert "## Problem Statement" in text
     assert "## Risk & Mitigations" in text
     assert "## Self-Improvement" in text
+    assert "## Validate First" in text
+    summary = read_json(run_dir / "summary.json")
+    assert summary["input_quality"]["level"] == "thin"
+    assert summary["retained_quality"]["level"] == "thin"
+    assert all(entry["artifact_type"] == "discovery_hypothesis" for entry in summary["opportunities"])
 
     # Report + run log rendered
     report = (run_dir / "report.md").read_text(encoding="utf-8")
@@ -98,6 +103,8 @@ def test_full_run_dry(workspace: Path) -> None:
     manifest = read_json(run_dir / "run.json")
     assert manifest["dry_run"] is True
     assert manifest["max_iterations"] == 2
+    assert manifest["input_quality"]["level"] == "thin"
+    assert manifest["retained_quality"]["level"] == "thin"
     assert manifest["source_value"] == "German healthcare back office"
     assert manifest["config_source"] == "defaults"
     assert manifest["prompt_version"]
@@ -157,6 +164,44 @@ def test_dynamic_constraint_params_are_persisted_and_reach_prompts(
     assert "- agent = openclaw" in planner
     assert len(candidate_prompts) == 5
     assert all("- deployment = local-only" in prompt for prompt in candidate_prompts)
+
+
+def test_unknown_constraint_values_do_not_activate_policy(workspace: Path) -> None:
+    result = run_mine(
+        workspace_path=workspace,
+        idea="Unknown deployment policy",
+        constraint_params={"deployment": "budget:low"},
+        dry_run=True,
+    )
+
+    assert all(
+        not any("budget low/zero" in note for note in opportunity["overrides_applied"])
+        for opportunity in result["opportunities"]
+    )
+
+
+def test_unresolved_draft_reference_blocks_publication_end_to_end(
+    workspace: Path, monkeypatch
+) -> None:
+    from automation_miner.models import mock
+
+    original = mock.call_json
+
+    def inject_unresolved_ref(role: str, schema_name: str, prompt: str):
+        payload = original(role, schema_name, prompt)
+        if schema_name == "OpportunityDraft":
+            payload["evidence_refs"] = ["S99"]
+        return payload
+
+    monkeypatch.setattr(mock, "call_json", inject_unresolved_ref)
+    result = run_mine(workspace_path=workspace, idea="Unresolved reference", dry_run=True)
+
+    assert all(opportunity["eligibility"] == "filtered" for opportunity in result["opportunities"])
+    assert all(
+        any("grounding: cited evidence ids do not resolve: S99" in reason for reason in opportunity["exclusion_reasons"])
+        for opportunity in result["opportunities"]
+    )
+    assert not list((workspace / "opps").rglob("AM-*.md"))
 
 
 def test_portfolio_planner_and_drafters_share_all_candidate_ideas(
@@ -356,7 +401,7 @@ def test_urgent_constraint_publishes_three_and_retains_the_rest(workspace: Path)
 
     # And the report explains what was held back rather than hiding it.
     report = (Path(result["run_dir"]) / "report.md").read_text(encoding="utf-8")
-    assert "## Excluded by Constraint Policy" in report
+    assert "## Excluded from Published Portfolio" in report
     assert "urgent timeline publishes only the top 3" in report
 
 

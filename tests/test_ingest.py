@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+import automation_miner.ingest as ingest_module
 from automation_miner.context import ContextBudget, estimate_tokens
 from automation_miner.ingest import MAX_SLUG_CHARS, ingest_file, ingest_idea, ingest_kb, slugify
 from automation_miner.models.client import MinerModel
@@ -192,6 +193,30 @@ def test_over_budget_kb_digests_toward_the_budget(
     # The point of the fix: the digest must actually use the allowance.
     assert packet.stats.budget_used_pct >= 50, packet.stats
     assert packet.stats.digest_calls > 0
+
+
+def test_preflight_profile_is_emitted_before_digesting(
+    tmp_path: Path, mock_model: MinerModel, monkeypatch
+) -> None:
+    kb = tmp_path / "kb"
+    kb.mkdir()
+    (kb / "ops.md").write_text("Team handles 400 claims/day in SAP. " * 600, "utf-8")
+    events: list[str] = []
+    original_digest = ingest_module.digest_evidence
+
+    def record_digest(*args, **kwargs):
+        events.append("digest")
+        return original_digest(*args, **kwargs)
+
+    monkeypatch.setattr(ingest_module, "digest_evidence", record_digest)
+    ingest_kb(
+        kb,
+        model=mock_model,
+        budget=SMALL,
+        preflight_callback=lambda _: events.append("preflight"),
+    )
+
+    assert events[:2] == ["preflight", "digest"]
 
 
 def test_over_budget_without_a_model_trims_whole_chunks(tmp_path: Path) -> None:

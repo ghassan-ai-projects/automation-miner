@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from automation_miner.context import ContextBudget, budget_chars, estimate_tokens, renumber
-from automation_miner.prompts import PROMPT_VERSION, digest_prompt
+from automation_miner.prompts import MAPPER_SYSTEM, PROMPT_VERSION, digest_prompt
 from automation_miner.schemas import Chunk
 
 if TYPE_CHECKING:
@@ -153,7 +153,7 @@ def _digest_batches(
             return cached
         label = batch.source + (f" ({batch.locator})" if batch.locator else "")
         result = model.chat(
-            "mapper", "", digest_prompt(label, batch.text, budget_chars(target_tokens))
+            "mapper", MAPPER_SYSTEM, digest_prompt(label, batch.text, budget_chars(target_tokens))
         )
         calls += 1
         cache.put(key, result)

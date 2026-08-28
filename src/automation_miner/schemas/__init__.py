@@ -186,6 +186,7 @@ class ContextPacket(ArtifactModel):
     domain: str
     domain_slug: str
     constraints: str = ""
+    raw_constraints: str = ""
     constraint_params: dict[str, str] = Field(default_factory=dict)
     source_kind: Literal["idea", "file", "kb"]
     overview: str
@@ -311,6 +312,23 @@ class PhasePlan(ArtifactModel):
     autonomy: list[str]
 
 
+class ExternalDataChannel(ArtifactModel):
+    """A structured external channel declaration used by residency policy."""
+
+    name: str
+    purpose: str
+    hosting_region: str
+    eu_hosting_verified: bool = False
+
+
+class PaymentAction(ArtifactModel):
+    """A structured payment action declaration used by approval policy."""
+
+    action: str
+    autonomous: bool = False
+    human_approval_required: bool = True
+
+
 class OpportunityDraft(ArtifactModel):
     """A single automation opportunity draft (pre-scoring)."""
 
@@ -336,6 +354,8 @@ class OpportunityDraft(ArtifactModel):
     evidence_refs: list[str] = Field(default_factory=list)
     assumptions: list[str]
     validation_questions: list[str]
+    external_data_channels: list[ExternalDataChannel] = Field(default_factory=list)
+    payment_actions: list[PaymentAction] = Field(default_factory=list)
 
 
 class DraftBatch(ArtifactModel):
@@ -439,6 +459,7 @@ class Opportunity(ArtifactModel):
     calibration: list[str] = Field(default_factory=list)
     unresolved_refs: list[str] = Field(default_factory=list)
     quality_gate_reasons: list[str] = Field(default_factory=list)
+    source_risk_level: Level | None = None
 
     @model_validator(mode="after")
     def validate_derived_fields(self) -> Opportunity:
@@ -535,6 +556,8 @@ class RunSummary(ArtifactModel):
     domain: str
     domain_slug: str
     constraints: str = ""
+    raw_constraints: str = ""
+    constraint_params: dict[str, str] = Field(default_factory=dict)
     created: str = ""
     duration_seconds: float = 0.0
     dry_run: bool = False
@@ -554,6 +577,7 @@ class RunManifest(ArtifactModel):
     domain: str
     domain_slug: str
     constraints: str
+    raw_constraints: str = ""
     constraint_params: dict[str, str] = Field(default_factory=dict)
     source_kind: Literal["idea", "file", "kb"]
     source_value: str = Field(min_length=1)

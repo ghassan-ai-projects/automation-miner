@@ -118,6 +118,18 @@ def test_unresolved_evidence_refs_are_flagged() -> None:
     assert any("do not exist" in note and "S99" in note for note in notes)
 
 
+def test_unresolved_evidence_refs_are_an_independent_publication_gate() -> None:
+    ranked = apply_portfolio_policy(
+        [make_opportunity("AM-099").model_copy(update={"unresolved_refs": ["S99"]})]
+    )
+
+    assert not published(ranked)
+    assert ranked[0].eligibility is Eligibility.FILTERED
+    assert ranked[0].exclusion_reasons == [
+        "grounding: cited evidence ids do not resolve: S99"
+    ]
+
+
 def test_coherent_score_is_returned_unchanged() -> None:
     score = make_score(4, 4, 4)
     validated, notes = validate_coherence(score, make_draft(effort="medium"))
@@ -146,6 +158,43 @@ def test_policy_recognizes_agent_limit_spellings() -> None:
 def test_policy_recognizes_urgency_spellings() -> None:
     for text in ("urgent", "needed in 1 week", "timeline: tight", "tight timeline"):
         assert parse_constraint_policy(text).urgent, text
+
+
+def test_policy_does_not_activate_on_negated_or_dismissed_prose() -> None:
+    policy = parse_constraint_policy(
+        "no budget concerns, spend freely; compliance is not relevant; we are not urgent"
+    )
+
+    assert not policy.low_budget
+    assert not policy.compliance
+    assert not policy.urgent
+
+
+def test_policy_keeps_an_active_clause_after_a_negated_clause() -> None:
+    policy = parse_constraint_policy("not urgent, but urgent escalation window")
+
+    assert policy.urgent
+
+
+def test_payment_and_residency_negations_are_not_constraints() -> None:
+    policy = parse_constraint_policy(
+        "payments do not require human approval; data do not remain in EU"
+    )
+
+    assert not policy.human_payment_approval
+    assert not policy.eu_data_residency
+
+
+def test_structured_policy_overrides_legacy_prose_and_unknowns_stay_advisory() -> None:
+    policy = parse_constraint_policy(
+        "budget:low urgent",
+        {"budget": "high", "urgent": "false", "deployment": "local-only"},
+    )
+
+    assert not policy.low_budget
+    assert not policy.urgent
+    assert policy.advisory_params == ("deployment",)
+    assert any("advisory" in note for note in policy.describe())
 
 
 def test_policy_recognizes_data_residency_and_payment_approval() -> None:

@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import math
 import re
+from html import escape
 from collections import Counter
 from dataclasses import dataclass, field
 from typing import Any, Iterable
@@ -465,7 +466,11 @@ def render_chunks(chunks: Iterable[Chunk], header: str = "") -> str:
     The ``[S12] file locator`` label is what the drafter cites back in
     ``evidence_refs`` and what a reviewer follows to the source document.
     """
-    blocks = [f"{chunk.label}\n{chunk.text.strip()}" for chunk in chunks]
+    blocks = [
+        f"{chunk.label}\n<untrusted-evidence id=\"{chunk.id}\">\n"
+        f"{escape(chunk.text.strip(), quote=False)}\n</untrusted-evidence>"
+        for chunk in chunks
+    ]
     body = "\n\n".join(blocks)
     if not header:
         return body
@@ -483,4 +488,11 @@ def fit_text(text: str, budget_tokens: int, marker: str = "\n\n[... trimmed to f
     cut = max(head.rfind("\n\n"), head.rfind("\n"), head.rfind(". "))
     if cut > limit // 2:
         head = head[: cut + 1]
-    return head.rstrip() + marker
+    trimmed = head.rstrip() + marker
+    open_count = trimmed.count("<untrusted-evidence ")
+    close_count = trimmed.count("</untrusted-evidence>")
+    if open_count > close_count:
+        trimmed += "\n" + "\n".join(
+            "</untrusted-evidence>" for _ in range(open_count - close_count)
+        )
+    return trimmed

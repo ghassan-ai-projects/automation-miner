@@ -52,6 +52,9 @@ def digest(prompt: str) -> str:
     target = int(target_match.group(1).replace(",", "")) if target_match else 800
     content_match = _CONTENT_RE.search(prompt)
     body = content_match.group(1) if content_match else prompt
+    source_match = re.search(r"<untrusted-source>\s*(.*?)\s*</untrusted-source>", body, re.DOTALL)
+    if source_match:
+        body = source_match.group(1)
     condensed = " ".join(body.split())
     if len(condensed) <= target:
         return condensed

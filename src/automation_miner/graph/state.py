@@ -16,6 +16,7 @@ class MinerState(TypedDict, total=False):
     input_kind: str  # idea | file | kb
     input_value: str
     constraints: str
+    policy_constraints: str
     constraint_params: dict[str, str]
     max_iterations: int
     created: str

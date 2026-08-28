@@ -23,6 +23,7 @@ import json
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
+from html import escape
 from pathlib import Path
 from typing import Any, Callable
 
@@ -142,7 +143,10 @@ def build_graph(
                 preflight_callback,
             )
         packet = packet.model_copy(
-            update={"constraint_params": state.get("constraint_params", {})}
+            update={
+                "constraint_params": state.get("constraint_params", {}),
+                "raw_constraints": state.get("policy_constraints", ""),
+            }
         )
         run_dir = workspace.new_run_dir(packet.domain_slug)
         write_json(run_dir / "context.json", packet)
@@ -217,7 +221,12 @@ def build_graph(
             budget.layer_tokens,
         )
         evidence = render_chunks(
-            selected, header=f"Domain map:\n{domain_map.model_dump_json(indent=2)}"
+            selected,
+            header=(
+                "Domain map:\n<untrusted-artifact>\n"
+                f"{escape(domain_map.model_dump_json(indent=2), quote=False)}\n"
+                "</untrusted-artifact>"
+            ),
         )
         result = model.call_json(
             "layer_analyst",
@@ -385,11 +394,14 @@ def build_graph(
     def score_node(state: MinerState) -> dict[str, Any]:
         started = time.time()
         constraints = state["constraints"]
-        policy = parse_constraint_policy(constraints)
+        policy = parse_constraint_policy(
+            state.get("policy_constraints", constraints), state.get("constraint_params")
+        )
         known_ids = ContextPacket.model_validate(state["context"]).chunk_ids()
 
         def process(item: dict[str, Any]) -> dict[str, Any]:
             draft = OpportunityDraft.model_validate(item["draft"])
+            source_risk = draft.risk_level
             proposed = model.call_json(
                 "scorer",
                 SCORER_SYSTEM,
@@ -415,6 +427,7 @@ def build_graph(
                 calibration=calibration,
                 unresolved_refs=unresolved,
                 quality_gate_reasons=item["quality_gate_reasons"],
+                source_risk_level=source_risk,
             ).model_dump(mode="json")
 
         opportunities = _parallel_map(
@@ -433,7 +446,8 @@ def build_graph(
         started = time.time()
         ranked = apply_portfolio_policy(
             [Opportunity.model_validate(o) for o in state["opportunities"]],
-            state["constraints"],
+            state.get("policy_constraints", state["constraints"]),
+            state.get("constraint_params"),
         )
         payload = [o.model_dump(mode="json") for o in ranked]
         write_json(
@@ -460,7 +474,10 @@ def build_graph(
         brief_paths: dict[str, str] = {}
         for opp in live:
             fname = f"{opp.am_id}-{title_slug(opp.draft.title)}.md"
-            write_text(opp_dir / fname, render_brief(opp, state["run_id"]))
+            write_text(
+                opp_dir / fname,
+                render_brief(opp, state["run_id"], input_quality=ctx.input_quality),
+            )
             brief_paths[opp.am_id] = str(opp_dir / fname)
 
         write_json(
@@ -519,6 +536,7 @@ def build_graph(
             domain=ctx.domain,
             domain_slug=ctx.domain_slug,
             constraints=ctx.constraints,
+            raw_constraints=ctx.raw_constraints,
             constraint_params=ctx.constraint_params,
             source_kind=ctx.source_kind,
             source_value=state["input_value"],
@@ -634,6 +652,7 @@ def run_mine(
             "input_kind": kind,
             "input_value": value,
             "constraints": effective_constraints,
+            "policy_constraints": constraints,
             "constraint_params": normalized_params,
             "max_iterations": max_iterations,
             "profile": profile,

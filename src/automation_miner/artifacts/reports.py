@@ -129,10 +129,10 @@ def _excluded_section(ranked: list[Opportunity]) -> list[str]:
         return []
     lines = [
         "",
-        "## Excluded by Constraint Policy",
+        "## Excluded from Published Portfolio",
         "",
         "These were fully drafted, critiqued and scored, then held back by the "
-        "constraints given for this run. They are retained in `scores.json` and "
+        "constraints or quality gates for this run. They are retained in `scores.json` and "
         "`summary.json`.",
         "",
         "| ID | Name | ICE | Reason |",
@@ -178,7 +178,7 @@ def render_report(
     usage = usage or RunUsage()
     live = published(ranked)
     date = run_id.split("_", 1)[0]
-    policy = parse_constraint_policy(context.constraints)
+    policy = parse_constraint_policy(context.raw_constraints, context.constraint_params)
 
     lines = [
         f"# Automation Mining Report — {context.domain}",
@@ -314,12 +314,14 @@ def render_summary(
         )
         for opp in ranked
     ]
-    policy = parse_constraint_policy(context.constraints)
+    policy = parse_constraint_policy(context.raw_constraints, context.constraint_params)
     return RunSummary(
         run_id=run_id,
         domain=context.domain,
         domain_slug=context.domain_slug,
         constraints=context.constraints,
+        raw_constraints=context.raw_constraints,
+        constraint_params=context.constraint_params,
         created=created,
         duration_seconds=duration_seconds,
         dry_run=dry_run,
@@ -476,7 +478,9 @@ def render_run_md(
             f"| {opp.am_id} | `{fname}` | {opp.ice} | {opp.tier.value} | {opp.status.value} |"
         )
 
-    notes = _run_notes(context, ranked, parse_constraint_policy(context.constraints))
+    notes = _run_notes(
+        context, ranked, parse_constraint_policy(context.raw_constraints, context.constraint_params)
+    )
     lines += [
         "",
         "---",
