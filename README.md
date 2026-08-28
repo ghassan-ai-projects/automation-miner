@@ -311,8 +311,10 @@ admission limits; budget exhaustion is recorded as a terminal `budget_exhausted`
 make sync      # uv sync --all-extras
 make test      # uv run pytest (fully offline, mock model)
 make lint      # uv run ruff check src tests
+make type-check # uv run mypy
+make contract-check # retired-symbol and schema-owner check
 make build     # build wheel and source distribution
-make ci-check  # lint, test, and build
+make ci-check  # lint, test, type-check, contract-check, and build
 make dry-run   # end-to-end smoke run
 ```
 

@@ -19,6 +19,10 @@ make ci-check
 The test suite is offline by default and uses the deterministic mock model. A provider
 API key is not required.
 
+The CI gate also runs mypy over the production package and the standalone contract
+check. LangGraph and provider payloads remain explicit dynamic boundaries; shared
+state, artifact schemas, and execution context are typed.
+
 ## Contribution rules
 
 - Keep changes scoped and maintainable.

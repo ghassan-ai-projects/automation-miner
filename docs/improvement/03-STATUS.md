@@ -11,8 +11,8 @@ Updated: 2026-08-28
 | Independent plan review — reliability/security lens | complete | `05-PLAN-REVIEW-RELIABILITY.md` |
 | Phase 1 | complete | implementation ready for its own commit; 289 tests passed; `ruff` passed |
 | Phase 2 | complete | two independent code reviews; all findings fixed; implementation ready for its own commit; 289 tests passed; `ruff` passed |
-| Phase 3 | complete | Commit `627f8cf`; per-run budgets, terminal manifests, staged publication, fail-closed visibility, SQLite allocator; 308 tests, Ruff, diff checks, and build passed |
-| Phase 4 | pending | |
+| Phase 3 | complete | Commits `627f8cf`, `29d9d69`; per-run budgets, terminal manifests, staged publication, fail-closed visibility, SQLite allocator, crash recovery; 320 tests, Ruff, diff checks, and build passed |
+| Phase 4 | in progress | Dead-contract removal, typed shared state, mypy, dependency bounds, contract check; implementation pending independent review and commit |
 | Phase 5 real-provider package | pending | |
 | Independent code review — correctness | complete with evidence gap | `06-CODE-REVIEW-CORRECTNESS.md`; returned findings fixed; replacement final reviewer timed out |
 | Independent code review — architecture/maintenance/security | complete with evidence gap | `07-CODE-REVIEW-ARCHITECTURE.md`; returned findings fixed; replacement final reviewer timed out |
@@ -33,3 +33,5 @@ command or artifact that supports the status.
 | 2026-08-28 | 3 | `tests/test_execution.py`, `tests/test_execution_provider.py`, graph failure/publication tests, SQLite cross-process allocator tests | complete | Focused gate: 71 passed; full offline gate is rerunning after final fail-closed regression; Ruff and diff checks clean. |
 | 2026-08-28 | 3 | Phase 3 review loop | in review | Correctness and architecture reviewers found and drove fixes for token admission, terminal call accounting, malformed manifests, and fail-closed publication visibility. Fresh final reviewers were reissued after inherited-context timeouts; no timeout is treated as approval. |
 | 2026-08-28 | 3 | commit `627f8cf`; `UV_CACHE_DIR=.uv-cache uv run pytest -q`; `UV_CACHE_DIR=.uv-cache uv run ruff check src tests`; `git diff --check`; `UV_CACHE_DIR=.uv-cache uv build` | complete | 308 tests passed; Ruff and diff checks passed; source distribution and wheel built. Returned review findings were fixed before commit. Replacement final reviewer pair did not return within bounded waits and is retained as an evidence gap. |
+| 2026-08-28 | 3 | commit `29d9d69`; publication recovery and failure-consistency regressions | complete | Returned correctness/architecture P1 findings were fixed: full-cost failed attempts, malformed usage, terminal deadlines, shared failure projection, crash-order recovery, strict lookup, locked quarantine/reindex, malformed-read guards, and complete failure views. Latest replacement reviewer pair did not return within bounded waits; no timeout is treated as approval. |
+| 2026-08-28 | 4 | typed-state/dependency/contract working tree | in review | `mypy`, contract check, Ruff, and focused tests pass; awaiting independent Phase 4 review before commit. |

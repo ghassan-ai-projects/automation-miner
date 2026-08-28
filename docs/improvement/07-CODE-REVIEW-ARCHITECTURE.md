@@ -49,9 +49,12 @@ per-run execution context, and requires a completed source manifest plus
 opportunity membership before registry or direct lookup visibility. Malformed
 source manifests are fail-closed and covered by `tests/test_registry.py`.
 
-The latest bounded re-review was reissued after the preceding reviewer context
-timed out, but the replacement reviewer also did not return within the bounded
-waits. That orchestration gap is not counted as approval. All findings returned
-by the independent review loop were fixed before commit `627f8cf`, and the
-focused/full offline gates passed; the missing final verdict remains an
-explicit evidence gap for future review.
+The latest returned architecture review (Cicero) rejected five findings: crash
+ordering, fail-open direct lookup, malformed-manifest masking, unlocked
+quarantine, and duplicated/stale failure projection. Those findings were fixed
+with a journal recovery state machine, strict frontmatter/manifest validation,
+locked quarantine plus reindex, malformed-read guards, and shared projection
+helpers before commit `29d9d69`. A subsequent replacement reviewer pair did not
+return within bounded waits; that orchestration gap is not counted as approval.
+The returned findings are closed, and the missing final approval verdict
+remains an explicit evidence gap.

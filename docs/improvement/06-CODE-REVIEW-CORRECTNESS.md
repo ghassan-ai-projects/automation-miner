@@ -45,9 +45,10 @@ exactness, records failed attempts with `calls=0`, and covers the behavior in
 `tests/test_execution.py`, `tests/test_execution_provider.py`, and
 `tests/test_graph.py`.
 
-The latest bounded re-review was reissued after the preceding reviewer context
-timed out, but the replacement reviewer also did not return within the bounded
-waits. That orchestration gap is not counted as approval. All findings returned
-by the independent review loop were fixed before commit `627f8cf`, and the
-focused/full offline gates passed; the missing final verdict remains an
-explicit evidence gap for future review.
+The latest returned correctness review (Plato) rejected two P1 findings: crash
+recovery could omit `summary.json`, and failure views retained stale metadata.
+Those findings were fixed with shared failure projection and a recovery-summary
+regression in `tests/test_publication.py`, before commit `29d9d69`. A subsequent
+replacement reviewer pair did not return within bounded waits; that
+orchestration gap is not counted as approval. The returned findings are closed,
+and the missing final approval verdict remains an explicit evidence gap.
