@@ -24,7 +24,6 @@ from pydantic import BaseModel
 _AM_RE = re.compile(r"AM-(\d+)")
 _AM_ID_RE = re.compile(r"(?:AM-)?(\d+)", re.IGNORECASE)
 _RUN_ID_RE = re.compile(r"\d{4}-\d{2}-\d{2}_[a-z0-9]+(?:-[a-z0-9]+)*")
-_BRIEF_SOURCE_RE = re.compile(r"^source:\s*(.+)$", re.MULTILINE)
 
 
 def default_workspace() -> Path:
@@ -168,15 +167,17 @@ class Workspace:
         am_id = normalize_am_id(value)
         matches = sorted(self.opps_dir.rglob(f"{am_id}-*.md")) if self.opps_dir.exists() else []
         visible = [path for path in matches if self._brief_is_published(path, am_id)]
-        return (am_id, visible[0]) if visible else None
+        return (am_id, visible[0]) if len(visible) == 1 else None
 
     def _brief_is_published(self, path: Path, am_id: str) -> bool:
         """Hide briefs whose source run did not complete publication."""
         try:
-            match = _BRIEF_SOURCE_RE.search(path.read_text(encoding="utf-8"))
-            if match is None:
+            from automation_miner.artifacts.registry import parse_frontmatter
+
+            metadata = parse_frontmatter(path.read_text(encoding="utf-8"))
+            if metadata.get("am-id") != am_id:
                 return False
-            source_run = json.loads(match.group(1))
+            source_run = metadata.get("source")
             if not isinstance(source_run, str) or not _RUN_ID_RE.fullmatch(source_run):
                 return False
             manifest = self.runs_dir / source_run / "run.json"
@@ -185,11 +186,13 @@ class Workspace:
             data = read_json(manifest)
         except (OSError, ValueError):
             return False
+        opportunities = data.get("opportunities") if isinstance(data, dict) else None
         return (
             isinstance(data, dict)
             and data.get("status") == "completed"
             and data.get("publication_status") == "complete"
-            and am_id in data.get("opportunities", [])
+            and isinstance(opportunities, list)
+            and am_id in opportunities
         )
 
     def run_report_path(self, run_id: str) -> Path:
@@ -230,6 +233,28 @@ def _legacy_counter_lock(root: Path):
             yield
         finally:
             fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+
+
+@contextmanager
+def workspace_transaction_lock(root: Path):
+    """Serialize cross-process workspace mutations through SQLite.
+
+    SQLite supplies the portable lock used by both AM-ID allocation and
+    registry publication.  The transaction is deliberately short-lived so a
+    slow model call never blocks an unrelated run's artifact publication.
+    """
+    root.mkdir(parents=True, exist_ok=True)
+    connection = sqlite3.connect(root / ".am-ids.sqlite3", timeout=30.0, isolation_level=None)
+    try:
+        connection.execute("PRAGMA busy_timeout = 30000")
+        connection.execute("BEGIN IMMEDIATE")
+        yield
+        connection.execute("COMMIT")
+    except Exception:
+        connection.rollback()
+        raise
+    finally:
+        connection.close()
 
 
 def write_text(path: Path, text: str) -> None:

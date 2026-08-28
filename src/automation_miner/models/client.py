@@ -378,13 +378,15 @@ class MinerModel:
                 if status not in RETRYABLE_STATUS or attempt == policy.attempts:
                     tracker.record(
                         role,
-                        attempted_tokens=prompt_tokens_estimate,
+                        attempted_tokens=prompt_tokens_estimate + route.max_tokens,
                         seconds=time.monotonic() - started,
                         retries=0,
                         failures=1,
                         attempts=1,
                         calls=0,
                     )
+                    if execution is not None:
+                        execution.remaining_seconds()
                     raise RuntimeError(
                         f"Chat completion failed for provider {route.provider!r} "
                         f"(HTTP {status}): {_error_detail(exc.response)}"
@@ -392,7 +394,7 @@ class MinerModel:
                 delay = _retry_delay(policy, attempt, exc.response)
                 tracker.record(
                     role,
-                    attempted_tokens=prompt_tokens_estimate,
+                    attempted_tokens=prompt_tokens_estimate + route.max_tokens,
                     retries=1,
                     attempts=1,
                     calls=0,
@@ -409,13 +411,15 @@ class MinerModel:
                 if attempt == policy.attempts:
                     tracker.record(
                         role,
-                        attempted_tokens=prompt_tokens_estimate,
+                        attempted_tokens=prompt_tokens_estimate + route.max_tokens,
                         seconds=time.monotonic() - started,
                         retries=0,
                         failures=1,
                         attempts=1,
                         calls=0,
                     )
+                    if execution is not None:
+                        execution.remaining_seconds()
                     raise RuntimeError(
                         f"Chat completion failed for provider {route.provider!r} "
                         f"after {policy.attempts} attempts: {exc}"
@@ -423,7 +427,7 @@ class MinerModel:
                 delay = _retry_delay(policy, attempt, None)
                 tracker.record(
                     role,
-                    attempted_tokens=prompt_tokens_estimate,
+                    attempted_tokens=prompt_tokens_estimate + route.max_tokens,
                     retries=1,
                     attempts=1,
                     calls=0,
@@ -439,11 +443,13 @@ class MinerModel:
                         execution.abandon_attempt(admission)
                     tracker.record(
                         role,
-                        attempted_tokens=prompt_tokens_estimate,
+                        attempted_tokens=prompt_tokens_estimate + route.max_tokens,
                         attempts=1,
                         failures=1,
                         calls=0,
                     )
+                    if execution is not None:
+                        execution.remaining_seconds()
                 raise
 
             try:
@@ -469,6 +475,8 @@ class MinerModel:
                         attempts=1,
                         calls=0,
                     )
+                    if execution is not None:
+                        execution.remaining_seconds()
                     raise RuntimeError(
                         f"Completion failed for role {role!r} using "
                         f"{route.provider!r}/{route.model!r} after "
@@ -487,8 +495,10 @@ class MinerModel:
                 self._sleep(delay)
                 retries += 1
                 continue
-            prompt_tokens = provider_usage.get("prompt_tokens")
-            completion_tokens = provider_usage.get("completion_tokens")
+            prompt_tokens = _reported_token_count(provider_usage.get("prompt_tokens"))
+            completion_tokens = _reported_token_count(
+                provider_usage.get("completion_tokens")
+            )
             exact = prompt_tokens is not None and completion_tokens is not None
             observed_prompt_tokens = (
                 int(prompt_tokens) if prompt_tokens is not None else prompt_tokens_estimate
@@ -598,6 +608,13 @@ def _parse_completion(
         raise RuntimeError(f"Provider {provider!r} returned empty content.")
     usage = data.get("usage")
     return content, usage if isinstance(usage, dict) else {}
+
+
+def _reported_token_count(value: object) -> int | None:
+    """Accept only non-negative integer provider usage values."""
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return None
+    return value
 
 
 def _extract_json(text: str) -> dict[str, Any]:

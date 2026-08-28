@@ -98,3 +98,54 @@ def test_am_number_reservation_is_unique_across_processes(tmp_path: Path) -> Non
         outputs.append(json.loads(stdout.replace("'", '"')))
 
     assert sorted(number for batch in outputs for number in batch) == [1, 2, 3, 4]
+
+
+def test_find_opportunity_rejects_non_list_manifest_opportunities(tmp_path: Path) -> None:
+    workspace = Workspace(tmp_path)
+    run_id = "2026-08-28_scalar-manifest"
+    run_dir = tmp_path / "runs" / run_id
+    run_dir.mkdir(parents=True)
+    (run_dir / "run.json").write_text(
+        json.dumps(
+            {
+                "status": "completed",
+                "publication_status": "complete",
+                "opportunities": "AM-001",
+            }
+        ),
+        encoding="utf-8",
+    )
+    opp_dir = tmp_path / "opps" / "domain"
+    opp_dir.mkdir(parents=True)
+    (opp_dir / "AM-001-scalar.md").write_text(
+        '---\nam-id: "AM-001"\nsource: "2026-08-28_scalar-manifest"\n---\n',
+        encoding="utf-8",
+    )
+
+    assert workspace.find_opportunity("AM-001") is None
+
+
+def test_find_opportunity_rejects_mismatch_and_ambiguity(tmp_path: Path) -> None:
+    workspace = Workspace(tmp_path)
+    run_id = "2026-08-28_lookup-safe"
+    run_dir = tmp_path / "runs" / run_id
+    run_dir.mkdir(parents=True)
+    (run_dir / "run.json").write_text(
+        json.dumps(
+            {
+                "status": "completed",
+                "publication_status": "complete",
+                "opportunities": ["AM-001"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    opp_dir = tmp_path / "opps" / "domain"
+    opp_dir.mkdir(parents=True)
+    mismatched = '---\nam-id: "AM-999"\nsource: "2026-08-28_lookup-safe"\n---\n'
+    matching = '---\nam-id: "AM-001"\nsource: "2026-08-28_lookup-safe"\n---\n'
+    (opp_dir / "AM-001-mismatch.md").write_text(mismatched, encoding="utf-8")
+    (opp_dir / "AM-001-first.md").write_text(matching, encoding="utf-8")
+    (opp_dir / "AM-001-second.md").write_text(matching, encoding="utf-8")
+
+    assert workspace.find_opportunity("AM-001") is None

@@ -199,6 +199,17 @@ def build_registry(base: Path) -> dict[str, Any]:
 
 def reindex(base: Path) -> dict[str, Any]:
     """Build the registry and write registry.json."""
+    from automation_miner.artifacts.workspace import workspace_transaction_lock
+
+    from automation_miner.artifacts.publication import recover_publications
+
+    with workspace_transaction_lock(base):
+        recover_publications(base)
+        return reindex_locked(base)
+
+
+def reindex_locked(base: Path) -> dict[str, Any]:
+    """Build and persist the registry while the caller owns the workspace lock."""
     from automation_miner.artifacts.workspace import write_json
 
     registry = build_registry(base)

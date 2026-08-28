@@ -20,21 +20,36 @@ Two structural changes from v3:
 from __future__ import annotations
 
 import json
+import logging
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from html import escape
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Literal, cast
 
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Send
 
 from automation_miner import ingest as ing
 from automation_miner.artifacts.briefs import render_brief, title_slug
-from automation_miner.artifacts.registry import parse_frontmatter, reindex
+from automation_miner.artifacts.publication import (
+    mark_manifest_failed,
+    mark_portfolio_failed,
+    mark_summary_failed,
+    promote_publication,
+    quarantine_run_briefs,
+    write_publication_journal,
+)
+from automation_miner.artifacts.registry import reindex_locked
 from automation_miner.artifacts.reports import render_report, render_run_md, render_summary
-from automation_miner.artifacts.workspace import Workspace, read_json, write_json, write_text
+from automation_miner.artifacts.workspace import (
+    Workspace,
+    read_json,
+    workspace_transaction_lock,
+    write_json,
+    write_text,
+)
 from automation_miner.constraints import normalize_constraint_params, render_constraints
 from automation_miner.context import (
     ContextBudget,
@@ -95,10 +110,11 @@ from automation_miner.scoring import (
 )
 
 MAX_ITERATIONS = 10
+LOGGER = logging.getLogger(__name__)
 
 
 def build_graph(
-    model: MinerModel,
+    model: MinerModel | RunScopedModel,
     workspace: Workspace,
     budget: ContextBudget | None = None,
     preflight_callback: Callable[[InputQuality], None] | None = None,
@@ -113,7 +129,10 @@ def build_graph(
             execution.remaining_seconds()
 
     def _index(state: MinerState) -> EvidenceIndex:
-        return EvidenceIndex([Chunk.model_validate(c) for c in state["context"]["chunks"]])
+        chunks = state["context"].get("chunks", [])
+        if not isinstance(chunks, list):
+            raise ValueError("context chunks must be a list")
+        return EvidenceIndex([Chunk.model_validate(chunk) for chunk in chunks])
 
     def _timed(state: MinerState, stage: str, started: float) -> dict[str, float]:
         elapsed = round(time.time() - started, 2)
@@ -290,7 +309,7 @@ def build_graph(
         started = time.time()
         ctx = ContextPacket.model_validate(state["context"])
         analyses = sorted(
-            state["layer_analyses"], key=lambda a: LAYER_ORDER.index(Layer(a["layer"]))
+            state["layer_analyses"], key=lambda a: LAYER_ORDER.index(Layer(str(a["layer"])))
         )
         result = model.call_json(
             "drafter",
@@ -373,10 +392,10 @@ def build_graph(
         index = _index(state)
         ordered = sorted(
             state["drafts"],
-            key=lambda d: (LAYER_ORDER.index(Layer(d["layer"])), d["title"]),
+            key=lambda d: (LAYER_ORDER.index(Layer(str(d["layer"]))), str(d["title"])),
         )
         reserved = workspace.reserve_am_numbers(len(ordered))
-        titles = [d["title"] for d in ordered]
+        titles = [str(d["title"]) for d in ordered]
 
         def process(position: int) -> dict[str, Any]:
             raw = ordered[position]
@@ -505,13 +524,22 @@ def build_graph(
         staging_dir = run_dir / "publication" / ctx.domain_slug
         opp_dir = workspace.opps_dir / ctx.domain_slug
         brief_paths: dict[str, str] = {}
+        publication_files: list[dict[str, str]] = []
         for opp in live:
             fname = f"{opp.am_id}-{title_slug(opp.draft.title)}.md"
+            staged_path = staging_dir / fname
+            target_path = opp_dir / fname
             write_text(
-                staging_dir / fname,
+                staged_path,
                 render_brief(opp, state["run_id"], input_quality=ctx.input_quality),
             )
-            brief_paths[opp.am_id] = str(opp_dir / fname)
+            brief_paths[opp.am_id] = str(target_path)
+            publication_files.append(
+                {
+                    "staged": str(staged_path.relative_to(run_dir)),
+                    "target": str(target_path.relative_to(workspace.root)),
+                }
+            )
 
         write_json(
             run_dir / "opportunities.json",
@@ -564,13 +592,8 @@ def build_graph(
             budget=run_budget,
         )
         write_json(run_dir / "run.json", manifest)
-
-        for staged_path in staging_dir.glob("*.md"):
-            target = opp_dir / staged_path.name
-            if target.exists():
-                raise RuntimeError(f"Refusing to overwrite existing brief: {target}")
-            target.parent.mkdir(parents=True, exist_ok=True)
-            staged_path.replace(target)
+        write_publication_journal(run_dir, "staged", files=publication_files)
+        promote_publication(run_dir, workspace.root, publication_files)
 
         summary = render_summary(
             run_id=state["run_id"],
@@ -583,7 +606,7 @@ def build_graph(
             dry_run=model.dry_run,
             brief_paths=brief_paths,
             status="completed",
-            publication_status="complete",
+            publication_status="pending",
             budget=run_budget,
         )
         write_json(run_dir / "summary.json", summary)
@@ -609,22 +632,29 @@ def build_graph(
                 usage=usage,
                 models=model.routing_table(),
                 status="completed",
-                publication_status="complete",
+                publication_status="pending",
                 budget=run_budget,
             ),
         )
+        write_publication_journal(run_dir, "views_written", files=publication_files)
         if execution is not None:
             execution.remaining_seconds()
-        write_json(
-            run_dir / "run.json",
-            manifest.model_copy(
-                update={
-                    "finished": f"{datetime.now():%Y-%m-%dT%H:%M:%S}",
-                    "publication_status": "complete",
-                }
-            ),
-        )
-        reindex(workspace.root)
+        with workspace_transaction_lock(workspace.root):
+            write_json(
+                run_dir / "run.json",
+                manifest.model_copy(
+                    update={
+                        "finished": f"{datetime.now():%Y-%m-%dT%H:%M:%S}",
+                        "publication_status": "complete",
+                    }
+                ),
+            )
+            write_publication_journal(run_dir, "manifest_complete", files=publication_files)
+            from automation_miner.artifacts.publication import complete_publication_views
+
+            complete_publication_views(run_dir)
+            reindex_locked(workspace.root)
+            write_publication_journal(run_dir, "complete", files=publication_files)
         if execution is not None:
             execution.remaining_seconds()
         return {
@@ -702,6 +732,8 @@ def run_mine(
         raise ValueError("mode must be auto, operational, or strategy") from exc
     normalized_params = normalize_constraint_params(constraint_params)
     effective_constraints = render_constraints(constraints, normalized_params)
+    kind: Literal["idea", "file", "kb"]
+    value: str
     if idea is not None:
         kind, value = "idea", idea
     elif file is not None:
@@ -721,6 +753,12 @@ def run_mine(
     else:
         preliminary_domain = kb.name if kb is not None else "untitled-kb"
     preliminary_slug = ing.slugify(preliminary_domain)
+    initial_analysis_mode = cast(
+        Literal["operational", "strategy"],
+        requested_mode.value
+        if requested_mode is not AnalysisMode.AUTO
+        else AnalysisMode.OPERATIONAL.value,
+    )
     try:
         workspace.ensure()
         run_dir = workspace.new_run_dir(preliminary_slug)
@@ -748,11 +786,7 @@ def run_mine(
             constraint_params=normalized_params,
             source_kind=kind,
             source_value=source_value,
-            analysis_mode=(
-                requested_mode.value
-                if requested_mode is not AnalysisMode.AUTO
-                else AnalysisMode.OPERATIONAL.value
-            ),
+            analysis_mode=initial_analysis_mode,
             requested_mode=requested_mode.value,
             status="running",
             budget=run_budget,
@@ -798,7 +832,7 @@ def run_mine(
         }
         try:
             graph = build_graph(scoped_model, workspace, preflight_callback=preflight_callback)
-            result: MinerState = graph.invoke(initial)  # type: ignore[assignment]
+            result: MinerState = graph.invoke(initial)
         except Exception as exc:
             _record_failure(run_dir, exc, execution)
             setattr(exc, "run_id", run_id)
@@ -814,96 +848,165 @@ def _record_failure(
     run_dir: Path, exc: BaseException, execution: RunExecutionContext
 ) -> None:
     """Persist terminal failure state into the exact run that raised."""
+    snapshot = execution.snapshot()
+    status: Literal["failed", "budget_exhausted"] = (
+        "budget_exhausted" if isinstance(exc, BudgetExceeded) else "failed"
+    )
+    quarantined: list[str] = []
     try:
-        snapshot = execution.snapshot()
-        status = "budget_exhausted" if isinstance(exc, BudgetExceeded) else "failed"
-        quarantined = _quarantine_run_briefs(run_dir)
-        try:
-            reindex(run_dir.parent.parent)
-        except Exception:
-            pass
-        written = sorted(
-            str(p.relative_to(run_dir)) for p in run_dir.rglob("*") if p.is_file()
-        )
-        write_json(
-            run_dir / "error.json",
-            StageFailure(
-                run_id=run_dir.name,
-                stage=snapshot.stage,
-                error_type=type(exc).__name__,
-                error=str(exc)[:2_000],
-                created=f"{datetime.now():%Y-%m-%dT%H:%M:%S}",
-                status=status,
-                budget=execution.budget,
-                budget_limit=getattr(exc, "limit", ""),
-                observed_attempts=snapshot.attempts,
-                observed_tokens=snapshot.tokens,
-                stage_seconds=snapshot.stage_seconds,
-                usage=execution.usage.snapshot(),
-                artifacts_written=written,
-                quarantined_artifacts=quarantined,
-            ),
-        )
-        manifest_path = run_dir / "run.json"
-        if manifest_path.is_file():
-            manifest = RunManifest.model_validate(read_json(manifest_path))
-            write_json(
-                manifest_path,
-                manifest.model_copy(
-                    update={
-                        "status": status,
-                        "publication_status": "pending",
-                        "finished": f"{datetime.now():%Y-%m-%dT%H:%M:%S}",
-                        "duration_seconds": snapshot.elapsed_seconds,
-                        "usage": execution.usage.snapshot(),
-                        "stage_seconds": snapshot.stage_seconds,
-                    }
-                ),
-            )
-        summary_path = run_dir / "summary.json"
-        if summary_path.is_file():
-            summary = read_json(summary_path)
-            if isinstance(summary, dict):
-                summary.update(
-                    {
-                        "status": status,
-                        "publication_status": "pending",
-                        "duration_seconds": snapshot.elapsed_seconds,
-                        "usage": execution.usage.snapshot().model_dump(mode="json"),
-                    }
-                )
-                write_json(summary_path, summary)
-        report_path = run_dir / "report.md"
-        if report_path.is_file():
-            report = report_path.read_text(encoding="utf-8")
-            report = report.replace(
-                "> **Status:** completed  ", f"> **Status:** {status}  ", 1
-            )
-            report = report.replace(
-                "> **Publication:** complete  ", "> **Publication:** pending  ", 1
-            )
-            write_text(report_path, report)
+        with workspace_transaction_lock(run_dir.parent.parent):
+            quarantined = quarantine_run_briefs(run_dir.parent.parent, run_dir)
+            reindex_locked(run_dir.parent.parent)
     except Exception:
-        # Failure recording must never replace the original pipeline error.
-        pass
-
-
-def _quarantine_run_briefs(run_dir: Path) -> list[str]:
-    """Move briefs from an incomplete run out of the published tree."""
-    workspace_root = run_dir.parent.parent
-    opps_dir = workspace_root / "opps"
-    quarantine_root = run_dir / "quarantine" / "opps"
-    moved: list[str] = []
-    if not opps_dir.is_dir():
-        return moved
-    for brief in opps_dir.rglob("AM-*.md"):
+        LOGGER.exception(
+            "Unable to quarantine or rebuild registry while recording failed run %s at %s",
+            run_dir.name,
+            run_dir,
+        )
+    if (run_dir / "publication.json").is_file():
         try:
-            if parse_frontmatter(brief.read_text(encoding="utf-8")).get("source") != run_dir.name:
-                continue
-            target = quarantine_root / brief.relative_to(opps_dir)
-            target.parent.mkdir(parents=True, exist_ok=True)
-            brief.replace(target)
-            moved.append(str(target.relative_to(run_dir)))
-        except (OSError, ValueError):
-            continue
-    return moved
+            write_publication_journal(run_dir, "quarantined")
+        except Exception:
+            LOGGER.exception(
+                "Unable to close publication journal for failed run %s at %s",
+                run_dir.name,
+                run_dir,
+            )
+    written = sorted(str(p.relative_to(run_dir)) for p in run_dir.rglob("*") if p.is_file())
+    failure = StageFailure(
+        run_id=run_dir.name,
+        stage=snapshot.stage,
+        error_type=type(exc).__name__,
+        error=str(exc)[:2_000],
+        created=f"{datetime.now():%Y-%m-%dT%H:%M:%S}",
+        status=status,
+        budget=execution.budget,
+        budget_limit=getattr(exc, "limit", ""),
+        observed_attempts=snapshot.attempts,
+        observed_tokens=snapshot.tokens,
+        stage_seconds=snapshot.stage_seconds,
+        usage=execution.usage.snapshot(),
+        artifacts_written=written,
+        quarantined_artifacts=quarantined,
+    )
+    try:
+        write_json(run_dir / "error.json", failure)
+    except Exception:
+        LOGGER.exception(
+            "Unable to persist failure artifact for run %s at %s",
+            run_dir.name,
+            run_dir,
+        )
+
+    manifest_path = run_dir / "run.json"
+    try:
+        raw_manifest = read_json(manifest_path) if manifest_path.is_file() else {}
+    except (OSError, ValueError):
+        LOGGER.exception("Unable to read manifest while recording failed run %s at %s", run_dir.name, run_dir)
+        raw_manifest = {}
+    manifest_data = raw_manifest if isinstance(raw_manifest, dict) else {}
+    if manifest_data:
+        mark_manifest_failed(manifest_data, status)
+        manifest_data.update(
+            {
+                "duration_seconds": snapshot.elapsed_seconds,
+                "usage": execution.usage.snapshot().model_dump(mode="json"),
+                "stage_seconds": snapshot.stage_seconds,
+            }
+        )
+        try:
+            write_json(manifest_path, manifest_data)
+        except Exception:
+            LOGGER.exception(
+                "Unable to update terminal manifest for run %s at %s", run_dir.name, run_dir
+            )
+
+    summary_path = run_dir / "summary.json"
+    try:
+        summary = read_json(summary_path) if summary_path.is_file() else _failure_summary(
+            run_dir, manifest_data, status, execution, snapshot.elapsed_seconds, exc
+        )
+        if isinstance(summary, dict):
+            mark_summary_failed(summary, status)
+            summary.update(
+                {
+                    "duration_seconds": snapshot.elapsed_seconds,
+                    "usage": execution.usage.snapshot().model_dump(mode="json"),
+                }
+            )
+            write_json(summary_path, summary)
+    except Exception:
+        LOGGER.exception(
+            "Unable to persist failure summary for run %s at %s", run_dir.name, run_dir
+        )
+
+    portfolio_path = run_dir / "opportunities.json"
+    try:
+        portfolio = read_json(portfolio_path) if portfolio_path.is_file() else {}
+        if isinstance(portfolio, dict):
+            mark_portfolio_failed(portfolio, status)
+            write_json(portfolio_path, portfolio)
+    except Exception:
+        LOGGER.exception(
+            "Unable to persist failure portfolio for run %s at %s", run_dir.name, run_dir
+        )
+
+    report_path = run_dir / "report.md"
+    try:
+        domain = str(manifest_data.get("domain", run_dir.name))
+        report = (
+            f"# Automation Mining Report — {domain}\n\n"
+            f"> **Run:** `{run_dir.name}`  \n"
+            f"> **Status:** {status}  \n"
+            "> **Publication:** pending  \n"
+            "> **Published opportunities:** 0  \n\n"
+            "## Failure\n\n"
+            f"- **Stage:** {snapshot.stage}\n"
+            f"- **Error:** {type(exc).__name__}: {str(exc)[:2_000]}\n"
+            "- **Details:** see `error.json` and `run.json`.\n"
+        )
+        write_text(report_path, report)
+    except Exception:
+        LOGGER.exception(
+            "Unable to persist failure report for run %s at %s", run_dir.name, run_dir
+        )
+
+
+def _failure_summary(
+    run_dir: Path,
+    manifest: dict[str, Any],
+    status: str,
+    execution: RunExecutionContext,
+    duration: float,
+    exc: BaseException,
+) -> dict[str, Any]:
+    """Create a valid minimal summary when failure precedes normal rendering."""
+    return {
+        "run_id": run_dir.name,
+        "domain": str(manifest.get("domain", run_dir.name)),
+        "domain_slug": str(manifest.get("domain_slug", "unknown")),
+        "constraints": str(manifest.get("constraints", "")),
+        "raw_constraints": str(manifest.get("raw_constraints", "")),
+        "constraint_params": manifest.get("constraint_params", {}),
+        "created": str(manifest.get("created", "")),
+        "status": status,
+        "publication_status": "pending",
+        "budget": execution.budget.model_dump(mode="json"),
+        "duration_seconds": duration,
+        "dry_run": bool(manifest.get("dry_run", False)),
+        "stats": {
+            "total": 0,
+            "published": 0,
+            "filtered": 0,
+            "by_layer": {},
+            "by_tier": {},
+            "avg_ice": 0.0,
+            "median_ice": 0.0,
+            "top_ice": 0,
+            "top_id": "",
+            "filters": {},
+        },
+        "usage": execution.usage.snapshot().model_dump(mode="json"),
+        "opportunities": [],
+        "notes": [f"{type(exc).__name__}: {str(exc)[:2_000]}", "See error.json for details."],
+    }

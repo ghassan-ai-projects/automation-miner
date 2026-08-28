@@ -355,6 +355,64 @@ def test_stage_failure_writes_error_json(workspace: Path, monkeypatch) -> None:
     assert "simulated provider outage" in error["error"]
     assert "context.json" in error["artifacts_written"]
     assert read_json(run_dirs[0] / "run.json")["status"] == "failed"
+    assert read_json(run_dirs[0] / "summary.json")["status"] == "failed"
+    assert "> **Status:** failed  " in (run_dirs[0] / "report.md").read_text(encoding="utf-8")
+
+
+def test_failure_recording_logs_when_error_artifact_cannot_be_written(
+    workspace: Path, monkeypatch, caplog
+) -> None:
+    import logging
+    import automation_miner.graph.build as build_module
+    from automation_miner.models.client import MinerModel
+
+    original = build_module.write_json
+
+    def fail_error(path, payload):  # type: ignore[no-untyped-def]
+        if path.name == "error.json":
+            raise OSError("error store unavailable")
+        return original(path, payload)
+
+    monkeypatch.setattr(build_module, "write_json", fail_error)
+    original_call = MinerModel.call_json
+
+    def explode(self, role, system, prompt, schema):  # type: ignore[no-untyped-def]
+        if role == "layer_analyst":
+            raise RuntimeError("failure for logging")
+        return original_call(self, role, system, prompt, schema)
+
+    monkeypatch.setattr(MinerModel, "call_json", explode)
+    with caplog.at_level(logging.ERROR):
+        with pytest.raises(RuntimeError, match="failure for logging"):
+            run_mine(workspace_path=workspace, idea="Failure logging", dry_run=True)
+
+    run_dir = next((workspace / "runs").iterdir())
+    assert "Unable to persist failure artifact" in caplog.text
+    assert run_dir.name in caplog.text
+    assert read_json(run_dir / "run.json")["status"] == "failed"
+    assert read_json(run_dir / "summary.json")["status"] == "failed"
+
+
+def test_failure_recording_does_not_mask_original_error_on_malformed_manifest(
+    workspace: Path,
+) -> None:
+    from automation_miner.execution import RunExecutionContext
+    from automation_miner.graph.build import _record_failure
+    from automation_miner.schemas import RunBudget
+
+    run_dir = workspace / "runs" / "2026-08-28_malformed-manifest"
+    run_dir.mkdir(parents=True)
+    (run_dir / "run.json").write_text("{not-json", encoding="utf-8")
+    execution = RunExecutionContext(run_dir.name, RunBudget())
+
+    with pytest.raises(RuntimeError, match="original pipeline error"):
+        try:
+            raise RuntimeError("original pipeline error")
+        except RuntimeError as exc:
+            _record_failure(run_dir, exc, execution)
+            raise
+
+    assert read_json(run_dir / "summary.json")["status"] == "failed"
 
 
 def test_run_manifest_exists_during_input_preflight(workspace: Path) -> None:
@@ -449,7 +507,7 @@ def test_post_publish_failure_marks_partial_artifacts_failed(workspace: Path, mo
     def fail_reindex(_root: Path) -> None:
         raise RuntimeError("simulated registry outage")
 
-    monkeypatch.setattr(build_module, "reindex", fail_reindex)
+    monkeypatch.setattr(build_module, "reindex_locked", fail_reindex)
     with pytest.raises(RuntimeError, match="simulated registry outage"):
         run_mine(workspace_path=workspace, idea="Partial publication", dry_run=True)
 
@@ -460,6 +518,9 @@ def test_post_publish_failure_marks_partial_artifacts_failed(workspace: Path, mo
     assert not list((workspace / "opps").rglob("AM-*.md"))
     error = read_json(run_dir / "error.json")
     assert len(error["quarantined_artifacts"]) == 5
+    summary = read_json(run_dir / "summary.json")
+    assert summary["stats"]["published"] == 0
+    assert all(entry["brief_path"] == "" for entry in summary["opportunities"])
 
 
 def test_opportunities_json_filters(workspace: Path) -> None:

@@ -112,8 +112,8 @@ class RunExecutionContext:
                 raise BudgetExceeded("max_tokens", self._tokens, self.budget.max_tokens)
 
     def abandon_attempt(self, admission: AttemptAdmission) -> None:
-        """Settle a failed attempt conservatively at its prompt cost."""
-        self.record_tokens(admission.prompt_tokens, 0, admission)
+        """Settle an unknown failed attempt at its full reserved cost."""
+        self.record_tokens(0, admission.reserved_tokens, admission)
 
     def remaining_seconds(self) -> float:
         with self._lock:
