@@ -43,7 +43,7 @@ class FakeModel:
 
 def _draft() -> OpportunityDraft:
     return OpportunityDraft.model_validate(
-        mock.call_json("drafter", "DraftBatch", "")["drafts"][0]
+        mock.call_json("drafter", "OpportunityDraft", "")
     )
 
 

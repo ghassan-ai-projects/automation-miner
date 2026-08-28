@@ -298,8 +298,6 @@ def call_json(role: str, schema_name: str, prompt: str) -> dict[str, Any]:
         return _candidate_portfolio(refs, prompt)
     if schema_name == "LayerAnalysis":
         return _layer_analysis(layer, refs)
-    if schema_name == "DraftBatch":
-        return {"drafts": [_draft(layer, refs, prompt)]}
     if schema_name == "OpportunityDraft":
         return _draft(layer, refs, prompt)
     if schema_name == "Critique":

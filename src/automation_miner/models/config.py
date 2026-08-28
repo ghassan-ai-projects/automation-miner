@@ -206,14 +206,14 @@ class MinerConfig:
 
 def _as_float(value: Any, default: float) -> float:
     try:
-        return float(value)  # type: ignore[arg-type]
+        return float(value)
     except (TypeError, ValueError):
         return default
 
 
 def _as_int(value: Any, default: int) -> int:
     try:
-        return int(value)  # type: ignore[arg-type]
+        return int(value)
     except (TypeError, ValueError):
         return default
 

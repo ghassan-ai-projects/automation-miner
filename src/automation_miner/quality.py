@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterable
+from typing import Literal
 
 from automation_miner.schemas import Chunk, InputQuality
 
@@ -38,7 +39,7 @@ def profile_input_quality(
     score = min(100, score)
 
     if len(signals) >= 5 and score >= 60:
-        level = "rich"
+        level: Literal["thin", "moderate", "rich"] = "rich"
     elif len(signals) >= 2 and score >= 30:
         level = "moderate"
     else:

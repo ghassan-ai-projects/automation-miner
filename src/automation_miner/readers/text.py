@@ -63,7 +63,7 @@ class TextReader(BaseReader):
     """Markdown, plain text, and other line-oriented prose formats."""
 
     name = "text"
-    suffixes = (
+    suffixes: tuple[str, ...] = (
         ".md",
         ".markdown",
         ".mdx",

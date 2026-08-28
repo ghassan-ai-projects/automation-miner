@@ -366,12 +366,6 @@ class OpportunityDraft(ArtifactModel):
     payment_actions: list[PaymentAction] = Field(default_factory=list)
 
 
-class DraftBatch(ArtifactModel):
-    """Wrapper so the drafter can return 1-2 drafts as one JSON object."""
-
-    drafts: list[OpportunityDraft] = Field(min_length=1, max_length=2)
-
-
 # Critic rubric weights (sum to 1.0).
 CRITIQUE_WEIGHTS: dict[str, float] = {
     "groundedness": 0.25,

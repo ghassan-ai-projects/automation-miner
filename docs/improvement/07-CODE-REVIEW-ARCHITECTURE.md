@@ -58,3 +58,19 @@ helpers before commit `29d9d69`. A subsequent replacement reviewer pair did not
 return within bounded waits; that orchestration gap is not counted as approval.
 The returned findings are closed, and the missing final approval verdict
 remains an explicit evidence gap.
+
+## Phase 4 review loop
+
+**Reviewer:** Hubble (independent architecture/maintenance lens)
+**Date:** 2026-08-28
+**Initial disposition:** REJECT, P2
+
+The reviewer found an orphaned `MinerState.analysis` channel and noted that the
+contract checker did not inspect `TypedDict` channels. The channel was removed
+from `src/automation_miner/graph/state.py`, and
+`scripts/check_contracts.py` now enumerates TypedDict fields and requires a
+production owner outside the declaration.
+
+**Corrected re-review disposition:** APPROVE; no remaining P1/P2 findings.
+**Verification:** 320 tests passed, Ruff passed, mypy passed, contract check
+passed, and the build passed.

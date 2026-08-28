@@ -440,7 +440,8 @@ class EvidenceIndex:
     def resolve(self, refs: Iterable[str]) -> tuple[list[str], list[str]]:
         """Split cited refs into known and unknown ids."""
         known = self.by_id()
-        valid, invalid = [], []
+        valid: list[str] = []
+        invalid: list[str] = []
         for ref in refs:
             (valid if ref in known else invalid).append(ref)
         return valid, invalid

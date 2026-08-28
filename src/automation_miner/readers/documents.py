@@ -74,9 +74,9 @@ class PdfReader(BaseReader):
 
         if document.is_encrypted:
             try:
-                opened = document.decrypt("")
+                opened = bool(document.decrypt(""))
             except Exception:
-                opened = 0
+                opened = False
             if not opened:
                 raise ReaderError("PDF is password-protected")
 

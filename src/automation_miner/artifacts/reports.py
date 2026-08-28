@@ -13,6 +13,8 @@ a run. The summary is the middle artifact: one compact row per opportunity.
 
 from __future__ import annotations
 
+from typing import Literal
+
 from automation_miner.artifacts.briefs import is_discovery_hypothesis, title_slug
 from automation_miner.schemas import (
     LAYER_ORDER,
@@ -185,8 +187,8 @@ def render_report(
     stats: PortfolioStats,
     usage: RunUsage | None = None,
     models: dict[str, str] | None = None,
-    status: str = "completed",
-    publication_status: str = "complete",
+    status: Literal["running", "completed", "failed", "budget_exhausted"] = "completed",
+    publication_status: Literal["pending", "complete"] = "complete",
     budget: RunBudget | None = None,
 ) -> str:
     """Ranked ICE table with run metadata, portfolio shape, and exclusions."""
@@ -301,8 +303,8 @@ def render_summary(
     duration_seconds: float,
     dry_run: bool,
     brief_paths: dict[str, str] | None = None,
-    status: str = "completed",
-    publication_status: str = "complete",
+    status: Literal["running", "completed", "failed", "budget_exhausted"] = "completed",
+    publication_status: Literal["pending", "complete"] = "complete",
     budget: RunBudget | None = None,
 ) -> RunSummary:
     """Compact, agent-facing view of a run — the payload MCP returns inline."""

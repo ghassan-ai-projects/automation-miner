@@ -249,10 +249,10 @@ def parse_constraint_policy(
             else:
                 values[policy_key] = value
     if "timeline" in structured:
-        value = structured["timeline"].casefold()
-        if value in {"tight", "urgent", "asap"}:
+        timeline = structured["timeline"].casefold()
+        if timeline in {"tight", "urgent", "asap"}:
             values["urgent"] = True
-        elif value in {"normal", "loose", "flexible"}:
+        elif timeline in {"normal", "loose", "flexible"}:
             values["urgent"] = False
         else:
             warnings.append(f"unrecognized structured timeline {structured['timeline']!r}; ignored")

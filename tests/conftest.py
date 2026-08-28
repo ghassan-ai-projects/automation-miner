@@ -24,4 +24,4 @@ def mock_model(workspace: Path) -> MinerModel:
 
 @pytest.fixture
 def sample_draft() -> OpportunityDraft:
-    return OpportunityDraft.model_validate(mock.call_json("drafter", "DraftBatch", "")["drafts"][0])
+    return OpportunityDraft.model_validate(mock.call_json("drafter", "OpportunityDraft", ""))

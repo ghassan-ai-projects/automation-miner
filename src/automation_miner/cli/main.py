@@ -108,7 +108,7 @@ def _build_parser() -> argparse.ArgumentParser:
 def _cmd_mine(args: argparse.Namespace) -> int:
     from automation_miner.graph.build import run_mine
 
-    def show_preflight(profile) -> None:  # type: ignore[no-untyped-def]
+    def show_preflight(profile: Any) -> None:
         stream = sys.stderr if args.as_json else sys.stdout
         print(f"Preflight: {profile.level} evidence ({profile.score}/100)", file=stream)
         print(f"Preflight warning: {profile.warning}", file=stream)
@@ -209,7 +209,7 @@ def _cmd_reindex(args: argparse.Namespace) -> int:
     return 0
 
 
-def _load_registry(root: Path) -> dict:
+def _load_registry(root: Path) -> dict[str, Any]:
     path = root / "registry.json"
     if not path.is_file():
         raise SystemExit(f"No registry at {path}. Run a mine or reindex first.")

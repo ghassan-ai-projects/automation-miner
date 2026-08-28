@@ -45,7 +45,7 @@ from automation_miner.schemas import (
 )
 
 if TYPE_CHECKING:
-    from automation_miner.models.client import MinerModel
+    from automation_miner.models.client import MinerModel, RunScopedModel
 
 MAX_DOMAIN_CHARS = 200
 MAX_SLUG_CHARS = 80
@@ -141,7 +141,7 @@ def _build_packet(
     skipped: list[SkippedFile],
     constraints: str,
     budget: ContextBudget,
-    model: MinerModel | None,
+    model: MinerModel | RunScopedModel | None,
     cache_root: Path | None,
     reader_errors: list[str],
     preflight_callback: Callable[[InputQuality], None] | None = None,
@@ -272,7 +272,7 @@ def ingest_idea(
 def ingest_file(
     path: Path,
     constraints: str = "",
-    model: MinerModel | None = None,
+    model: MinerModel | RunScopedModel | None = None,
     budget: ContextBudget | None = None,
     registry: ReaderRegistry | None = None,
     cache_root: Path | None = None,
@@ -306,7 +306,7 @@ def ingest_file(
 def ingest_kb(
     folder: Path,
     constraints: str = "",
-    model: MinerModel | None = None,
+    model: MinerModel | RunScopedModel | None = None,
     budget: ContextBudget | None = None,
     registry: ReaderRegistry | None = None,
     cache_root: Path | None = None,

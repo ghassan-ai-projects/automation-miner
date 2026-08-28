@@ -13,6 +13,7 @@ import os
 import re
 import sqlite3
 import tempfile
+from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
@@ -218,7 +219,7 @@ def normalize_am_id(value: str) -> str:
 
 
 @contextmanager
-def _legacy_counter_lock(root: Path):
+def _legacy_counter_lock(root: Path) -> Iterator[None]:
     """Coordinate with the pre-SQLite POSIX allocator during migration."""
     lock_path = root / ".am-id.lock"
     try:
@@ -236,7 +237,7 @@ def _legacy_counter_lock(root: Path):
 
 
 @contextmanager
-def workspace_transaction_lock(root: Path):
+def workspace_transaction_lock(root: Path) -> Iterator[None]:
     """Serialize cross-process workspace mutations through SQLite.
 
     SQLite supplies the portable lock used by both AM-ID allocation and

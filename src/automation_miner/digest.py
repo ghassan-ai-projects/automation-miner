@@ -30,7 +30,7 @@ from automation_miner.prompts import MAPPER_SYSTEM, PROMPT_VERSION, digest_promp
 from automation_miner.schemas import Chunk
 
 if TYPE_CHECKING:
-    from automation_miner.models.client import MinerModel
+    from automation_miner.models.client import MinerModel, RunScopedModel
 
 # A digest below this is a headline, not evidence.
 MIN_DIGEST_TOKENS = 120
@@ -138,7 +138,7 @@ def _batch_chunks(chunks: list[Chunk], batch_tokens: int) -> list[_Batch]:
 
 def _digest_batches(
     batches: list[_Batch],
-    model: MinerModel,
+    model: MinerModel | RunScopedModel,
     target_tokens: int,
     cache: DigestCache,
     workers: int,
@@ -185,7 +185,7 @@ def _digest_batches(
 
 def digest_evidence(
     chunks: list[Chunk],
-    model: MinerModel,
+    model: MinerModel | RunScopedModel,
     budget: ContextBudget,
     cache: DigestCache | None = None,
 ) -> DigestOutcome:

@@ -18,10 +18,10 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
 ]
 dependencies = [
-    "langgraph",
-    "pydantic>=2",
-    "pyyaml",
-    "httpx",
+    "langgraph>=1.2,<2",
+    "pydantic>=2.7,<3",
+    "pyyaml>=6,<7",
+    "httpx>=0.27,<1",
 ]
 
 [project.urls]
@@ -45,7 +45,16 @@ automation-miner = "automation_miner.cli.main:main"
 automation-miner-mcp = "automation_miner.mcp.server:main"
 
 [dependency-groups]
-dev = ["pytest", "ruff", "pypdf>=4", "python-docx>=1", "openpyxl>=3", "python-pptx>=1"]
+dev = [
+    "mypy>=1.13,<2",
+    "types-PyYAML>=6,<7",
+    "pytest>=8,<10",
+    "ruff>=0.8,<1",
+    "pypdf>=4",
+    "python-docx>=1",
+    "openpyxl>=3",
+    "python-pptx>=1",
+]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/automation_miner"]
@@ -56,3 +65,20 @@ target-version = "py312"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.mypy]
+python_version = "3.12"
+files = ["src/automation_miner"]
+ignore_missing_imports = true
+disallow_untyped_defs = true
+disallow_any_generics = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+show_error_codes = true
+
+# LangGraph transports untyped values at the graph boundary. The boundary is
+# explicit in graph/build.py; the shared MinerState and execution context stay
+# typed so dynamic provider payloads do not spread through the package.
+[[tool.mypy.overrides]]
+module = ["automation_miner.graph.build", "automation_miner.models.client"]
+disallow_untyped_defs = false
