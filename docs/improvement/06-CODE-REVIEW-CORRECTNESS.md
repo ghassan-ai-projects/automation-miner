@@ -46,7 +46,8 @@ exactness, records failed attempts with `calls=0`, and covers the behavior in
 `tests/test_graph.py`.
 
 The latest bounded re-review was reissued after the preceding reviewer context
-timed out. It had not returned a verdict at the time of this record; that
-orchestration gap is not counted as approval. Phase 3 remains eligible for
-commit only after the final independent verdict is recorded or the same review
-is independently completed by another reviewer pair.
+timed out, but the replacement reviewer also did not return within the bounded
+waits. That orchestration gap is not counted as approval. All findings returned
+by the independent review loop were fixed before commit `627f8cf`, and the
+focused/full offline gates passed; the missing final verdict remains an
+explicit evidence gap for future review.

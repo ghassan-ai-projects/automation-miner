@@ -11,11 +11,11 @@ Updated: 2026-08-28
 | Independent plan review — reliability/security lens | complete | `05-PLAN-REVIEW-RELIABILITY.md` |
 | Phase 1 | complete | implementation ready for its own commit; 289 tests passed; `ruff` passed |
 | Phase 2 | complete | two independent code reviews; all findings fixed; implementation ready for its own commit; 289 tests passed; `ruff` passed |
-| Phase 3 | in review | Per-run budgets, terminal manifests, staged publication, fail-closed visibility, SQLite allocator; focused and full gates green; phase commit pending final review record |
+| Phase 3 | complete | Commit `627f8cf`; per-run budgets, terminal manifests, staged publication, fail-closed visibility, SQLite allocator; 308 tests, Ruff, diff checks, and build passed |
 | Phase 4 | pending | |
 | Phase 5 real-provider package | pending | |
-| Independent code review — correctness | complete | `06-CODE-REVIEW-CORRECTNESS.md`; all findings fixed and rerun |
-| Independent code review — architecture/maintenance/security | complete | `07-CODE-REVIEW-ARCHITECTURE.md`; all findings fixed and rerun |
+| Independent code review — correctness | complete with evidence gap | `06-CODE-REVIEW-CORRECTNESS.md`; returned findings fixed; replacement final reviewer timed out |
+| Independent code review — architecture/maintenance/security | complete with evidence gap | `07-CODE-REVIEW-ARCHITECTURE.md`; returned findings fixed; replacement final reviewer timed out |
 | Final bar decision | pending | |
 
 ## Evidence ledger
@@ -32,3 +32,4 @@ command or artifact that supports the status.
 | 2026-08-28 | 2 | typed policy, raw/effective constraint separation, escaped prompt fences, typed high-stakes declarations, resolvability gate | complete | Two independent reviews; all findings fixed; full suite 289 passed; ruff and diff checks passed. |
 | 2026-08-28 | 3 | `tests/test_execution.py`, `tests/test_execution_provider.py`, graph failure/publication tests, SQLite cross-process allocator tests | complete | Focused gate: 71 passed; full offline gate is rerunning after final fail-closed regression; Ruff and diff checks clean. |
 | 2026-08-28 | 3 | Phase 3 review loop | in review | Correctness and architecture reviewers found and drove fixes for token admission, terminal call accounting, malformed manifests, and fail-closed publication visibility. Fresh final reviewers were reissued after inherited-context timeouts; no timeout is treated as approval. |
+| 2026-08-28 | 3 | commit `627f8cf`; `UV_CACHE_DIR=.uv-cache uv run pytest -q`; `UV_CACHE_DIR=.uv-cache uv run ruff check src tests`; `git diff --check`; `UV_CACHE_DIR=.uv-cache uv build` | complete | 308 tests passed; Ruff and diff checks passed; source distribution and wheel built. Returned review findings were fixed before commit. Replacement final reviewer pair did not return within bounded waits and is retained as an evidence gap. |
