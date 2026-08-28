@@ -74,3 +74,18 @@ production owner outside the declaration.
 **Corrected re-review disposition:** APPROVE; no remaining P1/P2 findings.
 **Verification:** 320 tests passed, Ruff passed, mypy passed, contract check
 passed, and the build passed.
+
+## Phase 5 review loop
+
+**Reviewer:** Hypatia (independent architecture/maintenance/evaluation lens)
+**Date:** 2026-08-28
+
+The initial review rejected weak corpus balance/provenance, profile collapse,
+missing label rationales, insufficient rating/adjudication gates, identity
+leakage controls, and an aggregate budget contradiction. The correction loop
+added canonical corpus hashing and rationales, distinct profiles, a shared
+70-attempt/120,000-token/30-minute budget with a 1,000-token critic cap,
+identity-key variant rejection, 2–3 domain enforcement, claim-level evidence
+annotations, a weighted-kappa threshold, and mandatory adjudication. The
+corrected final review disposition was **APPROVE**, with no remaining P1/P2
+findings.

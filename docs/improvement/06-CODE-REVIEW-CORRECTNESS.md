@@ -63,3 +63,16 @@ The review confirmed consistent `DraftBatch` removal, typed shared state, bounde
 dependencies, and green `mypy`, Ruff, contract, test, and build gates. The
 contract checker reports 35 schema contracts and 30 state channels with live
 owners.
+
+## Phase 5 review loop
+
+**Reviewer:** Lovelace (independent correctness/privacy/runtime lens)
+**Date:** 2026-08-28
+
+The initial review rejected missing corpus evidence fencing, weak terminal
+artifact validation, repository-local live inputs/results, and incomplete
+manifest/summary reconciliation. The correction loop added escaped untrusted
+evidence, typed `StageFailure` validation, external-path guards, exact
+cross-artifact status/usage/budget/count/ID checks, and duplicate-ID detection.
+The corrected final review disposition was **APPROVE**, with no remaining P1/P2
+findings. Offline harness tests and the full offline suite passed.
