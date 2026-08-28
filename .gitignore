@@ -28,6 +28,12 @@ MANIFEST
 
 # Private design notes and local mining output
 docs/
+# Keep the implementation bar and evidence ledger versioned even though the
+# audit archive remains local-only.
+!docs/
+docs/*
+!docs/improvement/
+!docs/improvement/*.md
 mining-workspace/
 
 # Local runtime configuration
