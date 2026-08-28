@@ -3,7 +3,7 @@
 **Source audit:** `docs/audit/`  
 **Bar:** [`00-IMPLEMENTATION-BAR.md`](00-IMPLEMENTATION-BAR.md)  
 **Created:** 2026-08-28  
-**Status:** Phases 1–4 implemented and individually gated; Phase 5 in progress; Phase 6 pending
+**Status:** Phases 1–5 implemented and individually gated; Phase 6 closure complete
 
 ## Operating rules
 
@@ -25,8 +25,8 @@
 | 2 | Typed policy and trust boundary | Structured/negation-safe policy parsing, evidence data fences, deterministic resolvability gate, security docs | Adversarial policy/injection/grounding tests; no false-positive activation | complete |
 | 3 | Bounded execution and reliability | Per-run budget/admission context, typed budget-exhaustion failure, terminal status, pre-ingestion run handle, portable ID locking, crash-safe publication journal | Budget tests under concurrency; failure artifacts identify exact run; commits `627f8cf`, `29d9d69` | complete |
 | 4 | Contract and maintenance cleanup | Remove dead symbols/contracts, update mock/tests, reduce typed-state `Any`, static type gate, dependency bounds | `ruff`, `pytest`, type gate, orphan check, build all green; commit `6e6de5e`; two review lenses approved | complete |
-| 5 | Real-provider evaluation package | Add opt-in bounded smoke/evaluation harness, labelled gate corpus, privacy controls, and evidence-rich runbook | 2–3-domain plan, sample size, two blinded raters, agreement and thresholds; two independent review lenses approved | reviewed; ready to commit |
-| 6 | Review loop and closure | Two independent code reviews; fix/re-review until bar; final status matrix | Review records, final tests, known evidence gaps, bar decision | pending |
+| 5 | Real-provider evaluation package | Add opt-in bounded smoke/evaluation harness, labelled gate corpus, privacy controls, and evidence-rich runbook | 2–3-domain plan, sample size, two blinded raters, agreement and thresholds; two independent review lenses approved; commits `cd7e6a2`, `cfd9039` | complete |
+| 6 | Review loop and closure | Two independent code reviews; fix/re-review until bar; final status matrix | Review records, final tests, known evidence gaps, bar decision; `09-FINAL-BAR-DECISION.md` | complete |
 
 ## Design decisions to validate in review
 

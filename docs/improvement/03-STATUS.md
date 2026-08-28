@@ -13,10 +13,11 @@ Updated: 2026-08-28
 | Phase 2 | complete | two independent code reviews; all findings fixed; implementation ready for its own commit; 289 tests passed; `ruff` passed |
 | Phase 3 | complete | Commits `627f8cf`, `29d9d69`; per-run budgets, terminal manifests, staged publication, fail-closed visibility, SQLite allocator, crash recovery; 320 tests, Ruff, diff checks, and build passed |
 | Phase 4 | complete | Commit `6e6de5e`; dead-contract removal, typed shared state, mypy, dependency bounds, and contract check; two independent reviews approved after one orphan-channel correction |
-| Phase 5 real-provider package | reviewed; ready to commit | Opt-in live-provider smoke/evaluation harness, labelled critic corpus, redaction/provenance controls, and runbook; two independent reviews approved after correction loops |
+| Phase 5 real-provider package | complete | Commits `cd7e6a2`, `cfd9039`; opt-in live-provider smoke/evaluation harness, labelled critic corpus, redaction/provenance controls, and runbook; two independent reviews approved after correction loops |
 | Independent code review — correctness | complete with evidence gap | `06-CODE-REVIEW-CORRECTNESS.md`; returned findings fixed; replacement final reviewer timed out |
 | Independent code review — architecture/maintenance/security | complete with evidence gap | `07-CODE-REVIEW-ARCHITECTURE.md`; returned findings fixed; replacement final reviewer timed out |
-| Final bar decision | pending | |
+| Independent code reviews — Phase 4/5 final lenses | complete | Heisenberg/Hubble and Lovelace/Hypatia final corrected re-reviews approved; findings are recorded in `06`/`07` |
+| Final bar decision | complete with external evidence gap | Engineering bar met; product readiness remains unclaimed until the live-provider plan is executed |
 
 ## Evidence ledger
 
@@ -37,3 +38,4 @@ command or artifact that supports the status.
 | 2026-08-28 | 4 | commit `6e6de5e`; pytest, Ruff, mypy, contract check, diff check, build | complete | 320 tests passed; 35 schema contracts and 30 state channels have live owners; package artifacts built successfully. |
 | 2026-08-28 | 4 | Heisenberg correctness/contracts review; Hubble architecture/maintenance review; corrected Hubble re-review | complete | Heisenberg approved with no P1/P2 findings. Hubble initially rejected the orphaned `MinerState.analysis` channel; it was removed and `scripts/check_contracts.py` was extended to check TypedDict channels. Hubble then approved. |
 | 2026-08-28 | 5 | Lovelace correctness/privacy/runtime review; Hypatia architecture/maintenance/evaluation review; correction loop | complete | Reviewers found and drove fixes for missing evidence fencing, aggregate budget contradictions, typed failure validation, source/result leakage, profile collapse, corpus fingerprint/rationales, rating gates, cross-artifact reconciliation, and duplicate IDs. Both final re-reviews approved. |
+| 2026-08-28 | 6 | `UV_CACHE_DIR=.uv-cache make ci-check`; final bar matrix | complete with external evidence gap | 328 tests passed; Ruff, mypy, 35-schema/30-channel contract check, and package build passed. No live provider call was made; product readiness remains an explicit evidence gap. |

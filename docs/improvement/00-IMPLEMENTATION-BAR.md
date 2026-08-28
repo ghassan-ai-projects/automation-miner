@@ -2,7 +2,7 @@
 
 **Source:** `docs/audit/00-AUDIT-PLAN.md` through `docs/audit/05-EXECUTIVE-SUMMARY.md`  
 **Created:** 2026-08-28  
-**Status:** Approved for implementation after two independent plan reviews
+**Status:** Engineering bar met; product-readiness evidence remains external
 
 ## Purpose
 
@@ -18,82 +18,82 @@ real-provider or product-outcome evidence.
 
 ### B1 — Input quality and product framing
 
-- [ ] Every run computes deterministic source and retained-evidence quality
+- [x] Every run computes deterministic source and retained-evidence quality
   profiles and records their signals, missing categories, scores, and warnings
   in `context.json`, `summary.json`, `run.json`, and `report.md`.
-- [ ] The CLI exposes the profile before the expensive analysis stages begin,
+- [x] The CLI exposes the profile before the expensive analysis stages begin,
   without printing from library code.
-- [ ] Thin/low-confidence published briefs are explicitly labeled
+- [x] Thin/low-confidence published briefs are explicitly labeled
   **Discovery Hypothesis** and promote validation questions near the top.
-- [ ] Brief step rendering never produces duplicated list numbering.
-- [ ] A real evidence-rich provider evaluation is specified with 2–3 diverse
+- [x] Brief step rendering never produces duplicated list numbering.
+- [x] A real evidence-rich provider evaluation is specified with 2–3 diverse
   domains, a fixed minimum sample, blinded independent raters, adjudication,
   agreement measurement, and predeclared thresholds; no offline run is
   misrepresented as product validation.
 
 ### B2 — Policy correctness
 
-- [ ] Constraint semantics have one typed source of truth for structured
+- [x] Constraint semantics have one typed source of truth for structured
   parameters and free-form compatibility syntax.
-- [ ] Negated prose such as “no budget concerns”, “compliance is not relevant”,
+- [x] Negated prose such as “no budget concerns”, “compliance is not relevant”,
   and “not urgent” does not activate a hard policy.
-- [ ] Structured constraint parameters used for policy decisions are validated,
+- [x] Structured constraint parameters used for policy decisions are validated,
   persisted, rendered, and covered by focused tests.
-- [ ] Policy decisions remain deterministic after parsing; all overrides and
+- [x] Policy decisions remain deterministic after parsing; all overrides and
   exclusions remain auditable.
 
 ### B3 — Trust boundary and input robustness
 
-- [ ] Evidence inserted into every model prompt is visibly marked as untrusted
+- [x] Evidence inserted into every model prompt is visibly marked as untrusted
   data, with instructions that content inside the data region is not executable
   instruction.
-- [ ] Grounding references are deterministically re-resolved against the run's
+- [x] Grounding references are deterministically re-resolved against the run's
   evidence index before publication; unresolved references are a hard quality
   gate, even if a critic omits a violation. This proves resolvability, not that
   the cited text semantically supports every claim.
-- [ ] PDF page extraction failures are recorded as telemetry rather than silently
+- [x] PDF page extraction failures are recorded as telemetry rather than silently
   disappearing.
-- [ ] `SECURITY.md` documents the prompt-injection boundary and its residual
+- [x] `SECURITY.md` documents the prompt-injection boundary and its residual
   limitations.
 
 ### B4 — Run safety and observability
 
-- [ ] Configurable per-invocation run budgets bound model attempts, tokens, and
+- [x] Configurable per-invocation run budgets bound model attempts, tokens, and
   wall-clock time without sharing cumulative state across simultaneous runs.
-- [ ] Budget exhaustion stops the pipeline with a typed, honest failure artifact
+- [x] Budget exhaustion stops the pipeline with a typed, honest failure artifact
   that identifies the limit, observed usage, admission policy, and artifacts
   already written.
-- [ ] Budget configuration and terminal status are persisted in the manifest and
+- [x] Budget configuration and terminal status are persisted in the manifest and
   surfaced in the summary/report.
-- [ ] Concurrent failures are attributed to their own run directory, not merely
+- [x] Concurrent failures are attributed to their own run directory, not merely
   the newest directory.
-- [ ] A run directory and initial status manifest exist before ingestion or any
+- [x] A run directory and initial status manifest exist before ingestion or any
   provider/digest call; partial publication has an explicit terminal-status
   policy.
 
 ### B5 — Code health and contract integrity
 
-- [ ] Stale v3.1 symbols and unused schema/test contracts are removed or have a
+- [x] Stale v3.1 symbols and unused schema/test contracts are removed or have a
   documented live owner.
-- [ ] Static typing is configured for the production package and runs in CI with
+- [x] Static typing is configured for the production package and runs in CI with
   an explicit, reviewed boundary for unavoidable dynamic provider/LangGraph
   values; the shared state and run context have materially less `Any`, and a
   separate orphan-contract check covers what typing cannot detect.
-- [ ] Dependency compatibility bounds are explicit for the used framework
+- [x] Dependency compatibility bounds are explicit for the used framework
   surfaces.
-- [ ] POSIX-only ID locking is either portable or clearly rejected with a tested
+- [x] POSIX-only ID locking is either portable or clearly rejected with a tested
   compatibility path.
 
 ### B6 — Verification and tracking
 
-- [ ] Focused tests cover each changed behavior and the complete offline suite is
+- [x] Focused tests cover each changed behavior and the complete offline suite is
   green.
-- [ ] Two independent plan reviews are recorded before implementation.
-- [ ] Two independent code reviews are recorded after implementation, covering
+- [x] Two independent plan reviews are recorded before implementation.
+- [x] Two independent code reviews are recorded after implementation, covering
   correctness/reliability and architecture/maintainability/security.
-- [ ] Each review finding is dispositioned as fixed, accepted with rationale, or
+- [x] Each review finding is dispositioned as fixed, accepted with rationale, or
   an explicit evidence gap.
-- [ ] A real-provider test plan names provider setup, capped scope, fixtures,
+- [x] A real-provider test plan names provider setup, capped scope, fixtures,
   assertions, cost/time guardrails, privacy/provenance controls, a labelled
   critic-gate corpus, and the evidence required before claiming product
   readiness.
