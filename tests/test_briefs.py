@@ -95,3 +95,20 @@ def test_brief_frontmatter_carries_effort_and_risk() -> None:
     metadata = parse_frontmatter(render_brief(opportunity, "run"))
     assert metadata["risk"] == "high"
     assert metadata["effort"] == "low"
+
+
+def test_brief_strips_model_numbering_and_frames_low_confidence_as_hypothesis() -> None:
+    opportunity = make_opportunity(
+        "AM-009",
+        confidence=2,
+        steps=["1. Extract the form", "2) Validate the fields"],
+    )
+
+    text = render_brief(opportunity, "run")
+
+    assert 'artifact-type: "discovery_hypothesis"' in text
+    assert "> **Discovery Hypothesis**" in text
+    assert "### Validate First" in text
+    assert "1. 1." not in text
+    assert "1. Extract the form" in text
+    assert "2. Validate the fields" in text

@@ -23,6 +23,7 @@ def test_mine_dry_run(workspace: Path, capsys) -> None:
     assert "Opportunities: 5" in out
     assert "AM-001" in out
     assert "Report:" in out
+    assert "Preflight: thin evidence" in out
 
 
 def test_mine_requires_input(workspace: Path, capsys) -> None:

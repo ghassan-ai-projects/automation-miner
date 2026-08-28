@@ -76,6 +76,7 @@ from automation_miner.schemas import (
     Opportunity,
     OpportunityCandidate,
     OpportunityDraft,
+    InputQuality,
     RunManifest,
     StageFailure,
     Tier,
@@ -97,6 +98,7 @@ def build_graph(
     model: MinerModel,
     workspace: Workspace,
     budget: ContextBudget | None = None,
+    preflight_callback: Callable[[InputQuality], None] | None = None,
 ) -> Any:
     """Build the compiled mining pipeline for one model client + workspace."""
     budget = budget or ContextBudget.from_config(model.config.context)
@@ -113,14 +115,31 @@ def build_graph(
         registry = build_registry(model.config.readers)
         cache_root = workspace.cache_dir
         if kind == "idea":
-            packet = ing.ingest_idea(value, state["constraints"], budget)
+            packet = ing.ingest_idea(
+                value,
+                state["constraints"],
+                budget,
+                preflight_callback=preflight_callback,
+            )
         elif kind == "file":
             packet = ing.ingest_file(
-                Path(value), state["constraints"], model, budget, registry, cache_root
+                Path(value),
+                state["constraints"],
+                model,
+                budget,
+                registry,
+                cache_root,
+                preflight_callback,
             )
         else:
             packet = ing.ingest_kb(
-                Path(value), state["constraints"], model, budget, registry, cache_root
+                Path(value),
+                state["constraints"],
+                model,
+                budget,
+                registry,
+                cache_root,
+                preflight_callback,
             )
         packet = packet.model_copy(
             update={"constraint_params": state.get("constraint_params", {})}
@@ -518,6 +537,8 @@ def build_graph(
             stage_seconds=stage_seconds,
             usage=usage,
             context=ctx.stats,
+            input_quality=ctx.input_quality,
+            retained_quality=ctx.retained_quality,
         )
         write_json(run_dir / "run.json", manifest)
         reindex(workspace.root)
@@ -581,6 +602,7 @@ def run_mine(
     mode: str = "auto",
     constraint_params: dict[str, Any] | None = None,
     model: MinerModel | None = None,
+    preflight_callback: Callable[[InputQuality], None] | None = None,
 ) -> MinerState:
     """Run the full pipeline once. Exactly one of idea/file/kb is required."""
     provided = [x is not None for x in (idea, file, kb)]
@@ -622,7 +644,7 @@ def run_mine(
             "drafts": [],
             "stage_seconds": {},
         }
-        graph = build_graph(model, workspace)
+        graph = build_graph(model, workspace, preflight_callback=preflight_callback)
         try:
             result: MinerState = graph.invoke(initial)  # type: ignore[assignment]
         except Exception as exc:

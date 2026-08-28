@@ -166,6 +166,16 @@ class ContextStats(ArtifactModel):
     digest_cache_hits: int = 0
 
 
+class InputQuality(ArtifactModel):
+    """Deterministic evidence-richness signal used for preflight and framing."""
+
+    level: Literal["thin", "moderate", "rich"] = "thin"
+    score: int = Field(default=0, ge=0, le=100)
+    signals: list[str] = Field(default_factory=list)
+    missing: list[str] = Field(default_factory=list)
+    warning: str = ""
+
+
 class ContextPacket(ArtifactModel):
     """Normalized, budget-bounded input for the pipeline.
 
@@ -184,6 +194,8 @@ class ContextPacket(ArtifactModel):
     skipped: list[SkippedFile] = Field(default_factory=list)
     reader_errors: list[str] = Field(default_factory=list)
     stats: ContextStats = Field(default_factory=ContextStats)
+    input_quality: InputQuality = Field(default_factory=InputQuality)
+    retained_quality: InputQuality = Field(default_factory=InputQuality)
 
     def chunk_ids(self) -> set[str]:
         return {chunk.id for chunk in self.chunks}
@@ -513,6 +525,7 @@ class SummaryEntry(ArtifactModel):
     filters: list[str] = Field(default_factory=list)
     problem: str
     brief_path: str = ""
+    artifact_type: Literal["opportunity_brief", "discovery_hypothesis"] = "opportunity_brief"
 
 
 class RunSummary(ArtifactModel):
@@ -527,6 +540,8 @@ class RunSummary(ArtifactModel):
     dry_run: bool = False
     stats: PortfolioStats = Field(default_factory=PortfolioStats)
     context: ContextStats = Field(default_factory=ContextStats)
+    input_quality: InputQuality = Field(default_factory=InputQuality)
+    retained_quality: InputQuality = Field(default_factory=InputQuality)
     usage: RunUsage = Field(default_factory=RunUsage)
     opportunities: list[SummaryEntry] = Field(default_factory=list)
     notes: list[str] = Field(default_factory=list)
@@ -557,6 +572,8 @@ class RunManifest(ArtifactModel):
     stage_seconds: dict[str, float] = Field(default_factory=dict)
     usage: RunUsage = Field(default_factory=RunUsage)
     context: ContextStats = Field(default_factory=ContextStats)
+    input_quality: InputQuality = Field(default_factory=InputQuality)
+    retained_quality: InputQuality = Field(default_factory=InputQuality)
 
 
 class StageFailure(ArtifactModel):

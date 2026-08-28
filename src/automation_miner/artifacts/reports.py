@@ -13,7 +13,7 @@ a run. The summary is the middle artifact: one compact row per opportunity.
 
 from __future__ import annotations
 
-from automation_miner.artifacts.briefs import title_slug
+from automation_miner.artifacts.briefs import is_discovery_hypothesis, title_slug
 from automation_miner.schemas import (
     LAYER_ORDER,
     LAYER_TITLES,
@@ -94,6 +94,10 @@ def _context_lines(context: ContextPacket) -> list[str]:
         + (f", {stats.skipped_files} skipped" if stats.skipped_files else ""),
         f"- **Evidence index:** {stats.chunks} chunks, {_tokens(stats.evidence_tokens)} tokens "
         f"({stats.budget_used_pct}% of a {_tokens(stats.budget_tokens)} budget)",
+        f"- **Input quality:** {context.input_quality.level} "
+        f"({context.input_quality.score}/100) — {context.input_quality.warning}",
+        f"- **Retained-evidence quality:** {context.retained_quality.level} "
+        f"({context.retained_quality.score}/100) — {context.retained_quality.warning}",
     ]
     if stats.source_chars:
         lines.append(
@@ -302,6 +306,11 @@ def render_summary(
             filters=active_filters(opp),
             problem=_first_sentence(opp.draft.problem),
             brief_path=paths.get(opp.am_id, ""),
+            artifact_type=(
+                "discovery_hypothesis"
+                if is_discovery_hypothesis(opp, context.input_quality)
+                else "opportunity_brief"
+            ),
         )
         for opp in ranked
     ]
@@ -316,6 +325,8 @@ def render_summary(
         dry_run=dry_run,
         stats=stats,
         context=context.stats,
+        input_quality=context.input_quality,
+        retained_quality=context.retained_quality,
         usage=usage,
         opportunities=entries,
         notes=_run_notes(context, ranked, policy),
@@ -369,6 +380,8 @@ def render_run_md(
         f"> **Context provided:** {context.source_kind} input "
         f"({context.stats.included_files} files, {context.stats.chunks} evidence chunks, "
         f"{_tokens(context.stats.evidence_tokens)} tokens)",
+        f"> **Input quality:** {context.input_quality.level} "
+        f"({context.input_quality.score}/100) — {context.input_quality.warning}",
         f"> **Date:** {date}",
         "> **Engineer:** automation-miner engine",
         "",

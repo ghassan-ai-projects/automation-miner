@@ -15,7 +15,7 @@ import json
 import re
 from datetime import datetime
 
-from automation_miner.schemas import Opportunity
+from automation_miner.schemas import InputQuality, Opportunity
 from automation_miner.scoring import active_filters
 
 FILTER_LABELS: dict[str, str] = {
@@ -45,7 +45,17 @@ def _bullets(items: list[str]) -> str:
 
 
 def _numbered(items: list[str]) -> str:
-    return "\n".join(f"{i}. {item}" for i, item in enumerate(items, 1))
+    cleaned = [re.sub(r"^\s*\d+[.)]\s*", "", item) for item in items]
+    return "\n".join(f"{i}. {item}" for i, item in enumerate(cleaned, 1))
+
+
+def is_discovery_hypothesis(
+    opp: Opportunity, input_quality: InputQuality | None = None
+) -> bool:
+    """Frame uncertain output, including all thin-input output, as discovery work."""
+    return (
+        input_quality is not None and input_quality.level == "thin"
+    ) or opp.score.confidence <= 2 or not opp.draft.evidence_refs
 
 
 def _scoring_section(opp: Opportunity) -> str:
@@ -114,11 +124,27 @@ def _evidence_section(opp: Opportunity) -> str:
     return "\n".join(lines)
 
 
-def render_brief(opp: Opportunity, run_id: str, date: str | None = None) -> str:
+def render_brief(
+    opp: Opportunity,
+    run_id: str,
+    date: str | None = None,
+    input_quality: InputQuality | None = None,
+) -> str:
     """Render one AM-XXX brief as self-contained markdown with YAML frontmatter."""
     d = opp.draft
     date = date or f"{datetime.now():%Y-%m-%d}"
     tags = f"[automation, {d.layer.value}, {opp.domain_slug}]"
+    hypothesis = is_discovery_hypothesis(opp, input_quality)
+    artifact_type = "discovery_hypothesis" if hypothesis else "opportunity_brief"
+    framing = (
+        ""
+        if not hypothesis
+        else f"> **Discovery Hypothesis**  \n"
+        "Validate the current state and assumptions before treating this as an "
+        "implementation brief.\n\n"
+        "### Validate First\n"
+        f"{_bullets(d.validation_questions)}\n"
+    )
 
     impact_rows = "\n".join(
         f"| {_cell(r.dimension)} | {_cell(r.current)} | {_cell(r.automated)} | "
@@ -148,6 +174,7 @@ risk: "{d.risk_level.value}"
 critique: {opp.critique_overall}
 iterations: {opp.iterations}
 eligibility: "{opp.eligibility.value}"
+artifact-type: "{artifact_type}"
 agent-count: {d.agent_count}
 created: "{date}"
 updated: "{date}"
@@ -156,6 +183,8 @@ tags: {tags}
 ---
 
 # {opp.am_id}: {d.title}
+
+{framing}
 
 ## Problem Statement
 

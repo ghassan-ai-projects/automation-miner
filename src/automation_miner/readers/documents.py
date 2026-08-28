@@ -81,19 +81,29 @@ class PdfReader(BaseReader):
                 raise ReaderError("PDF is password-protected")
 
         self._pages = len(document.pages)
+        self._page_errors: list[str] = []
         segments: list[Segment] = []
         for number, page in enumerate(document.pages, 1):
             try:
                 text = page.extract_text() or ""
-            except Exception:
+            except Exception as exc:
+                self._page_errors.append(f"p.{number}: {type(exc).__name__}: {exc}")
                 continue
             if text.strip():
                 segments.append(Segment(text=text, locator=f"p.{number}"))
+            else:
+                self._page_errors.append(f"p.{number}: no extractable text")
 
         if not segments:
             raise ReaderError(
                 f"no extractable text in {self._pages} page(s) — likely a scanned "
-                "PDF; OCR it before mining"
+                "PDF; OCR it before mining",
+                meta={
+                    "pages": self._pages,
+                    "pages_with_text": 0,
+                    "pages_failed": len(self._page_errors),
+                    "page_errors": "; ".join(self._page_errors[:8]),
+                },
             )
         quality, examples = pdf_extraction_quality("\n".join(s.text for s in segments))
         self._extraction_quality = quality
@@ -123,6 +133,9 @@ class PdfReader(BaseReader):
         info = super().meta(path, data, segments)
         info["pages"] = getattr(self, "_pages", 0)
         info["pages_with_text"] = len(segments)
+        info["pages_failed"] = len(getattr(self, "_page_errors", []))
+        if self._page_errors:
+            info["page_errors"] = "; ".join(self._page_errors[:8])
         info["extraction_quality"] = getattr(self, "_extraction_quality", 1.0)
         return info
 

@@ -108,6 +108,11 @@ def _build_parser() -> argparse.ArgumentParser:
 def _cmd_mine(args: argparse.Namespace) -> int:
     from automation_miner.graph.build import run_mine
 
+    def show_preflight(profile) -> None:  # type: ignore[no-untyped-def]
+        stream = sys.stderr if args.as_json else sys.stdout
+        print(f"Preflight: {profile.level} evidence ({profile.score}/100)", file=stream)
+        print(f"Preflight warning: {profile.warning}", file=stream)
+
     if args.idea is None and args.file is None and args.kb is None:
         print("error: provide an idea, --file, or --kb", file=sys.stderr)
         return 2
@@ -127,6 +132,7 @@ def _cmd_mine(args: argparse.Namespace) -> int:
         dry_run=args.dry_run,
         mode=args.mode,
         constraint_params=constraint_params,
+        preflight_callback=show_preflight,
     )
     summary_path = result.get("summary_path", "")
     summary: dict[str, Any] = {}
