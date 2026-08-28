@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import json
+import subprocess
+import sys
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 
@@ -54,6 +57,7 @@ def test_am_number_reservations_are_monotonic_and_concurrent(tmp_path: Path) -> 
         ranges = list(pool.map(lambda _: workspace.reserve_am_numbers(2), range(4)))
     allocated = sorted(number for batch in ranges for number in batch)
     assert allocated == list(range(1, 9))
+    assert (tmp_path / ".am-ids.sqlite3").is_file()
     assert workspace.reserve_am_numbers(1) == [9]
 
 
@@ -61,3 +65,36 @@ def test_am_number_reservation_continues_from_registry_only_migration(tmp_path: 
     workspace = Workspace(tmp_path)
     write_json(workspace.registry_path, {"entries": [{"i": "AM-377"}]})
     assert workspace.reserve_am_numbers(2) == [378, 379]
+
+
+def test_am_number_reservation_migrates_legacy_counter(tmp_path: Path) -> None:
+    workspace = Workspace(tmp_path)
+    (tmp_path / ".am-counter").write_text("41\n", encoding="utf-8")
+
+    assert workspace.reserve_am_numbers(2) == [42, 43]
+    assert workspace.next_am_number() == 44
+    assert (tmp_path / ".am-counter").read_text(encoding="utf-8").strip() == "43"
+
+
+def test_am_number_reservation_is_unique_across_processes(tmp_path: Path) -> None:
+    script = (
+        "from pathlib import Path; "
+        "from automation_miner.artifacts.workspace import Workspace; "
+        f"print(Workspace(Path({str(tmp_path)!r})).reserve_am_numbers(2))"
+    )
+    processes = [
+        subprocess.Popen(
+            [sys.executable, "-c", script],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        for _ in range(2)
+    ]
+    outputs = []
+    for process in processes:
+        stdout, stderr = process.communicate(timeout=10)
+        assert process.returncode == 0, stderr
+        outputs.append(json.loads(stdout.replace("'", '"')))
+
+    assert sorted(number for batch in outputs for number in batch) == [1, 2, 3, 4]

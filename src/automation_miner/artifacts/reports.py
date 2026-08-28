@@ -23,6 +23,7 @@ from automation_miner.schemas import (
     Opportunity,
     PortfolioStats,
     RunSummary,
+    RunBudget,
     RunUsage,
     SummaryEntry,
     Tier,
@@ -66,16 +67,27 @@ def _ice_row(index: int, opp: Opportunity, with_tier: bool = True) -> str:
     )
 
 
-def _usage_lines(usage: RunUsage) -> list[str]:
-    if not usage.calls:
+def _usage_lines(usage: RunUsage, budget: RunBudget | None = None) -> list[str]:
+    if not usage.calls and not usage.attempts:
         return []
     exactness = "provider-reported" if usage.exact else "estimated"
     lines = [
         f"- **Model calls:** {usage.calls}"
         + (f" ({usage.retries} retried)" if usage.retries else ""),
+        f"- **Admission:** {usage.logical_calls} logical call(s), {usage.attempts} attempt(s)",
         f"- **Tokens ({exactness}):** {_tokens(usage.prompt_tokens)} in, "
         f"{_tokens(usage.completion_tokens)} out, {_tokens(usage.total_tokens)} total",
     ]
+    if usage.attempted_tokens:
+        lines.append(
+            f"- **Observed attempt tokens:** {_tokens(usage.attempted_tokens)} "
+            "(includes failed or conservatively bounded attempts)"
+        )
+    if budget is not None:
+        lines.append(
+            f"- **Run budget:** {budget.max_attempts} attempts, "
+            f"{_tokens(budget.max_tokens)} tokens, {budget.max_seconds:g}s wall clock"
+        )
     if usage.by_role:
         busiest = sorted(
             usage.by_role.items(), key=lambda kv: -kv[1].total_tokens
@@ -173,6 +185,9 @@ def render_report(
     stats: PortfolioStats,
     usage: RunUsage | None = None,
     models: dict[str, str] | None = None,
+    status: str = "completed",
+    publication_status: str = "complete",
+    budget: RunBudget | None = None,
 ) -> str:
     """Ranked ICE table with run metadata, portfolio shape, and exclusions."""
     usage = usage or RunUsage()
@@ -185,6 +200,8 @@ def render_report(
         "",
         f"> **Run:** `{run_id}`  ",
         f"> **Date:** {date}  ",
+        f"> **Status:** {status}  ",
+        f"> **Publication:** {publication_status}  ",
         f"> **Constraints:** {context.constraints or 'none'}  ",
         f"> **Opportunities:** {stats.published} published"
         + (f", {stats.filtered} filtered" if stats.filtered else ""),
@@ -210,7 +227,7 @@ def render_report(
         )
         lines.append(f"- **Layers covered:** {layers}")
     lines += _context_lines(context)
-    lines += _usage_lines(usage)
+    lines += _usage_lines(usage, budget)
     if models:
         lines.append(
             "- **Models:** "
@@ -284,6 +301,9 @@ def render_summary(
     duration_seconds: float,
     dry_run: bool,
     brief_paths: dict[str, str] | None = None,
+    status: str = "completed",
+    publication_status: str = "complete",
+    budget: RunBudget | None = None,
 ) -> RunSummary:
     """Compact, agent-facing view of a run — the payload MCP returns inline."""
     paths = brief_paths or {}
@@ -325,6 +345,9 @@ def render_summary(
         created=created,
         duration_seconds=duration_seconds,
         dry_run=dry_run,
+        status=status,
+        publication_status=publication_status,
+        budget=budget or RunBudget(),
         stats=stats,
         context=context.stats,
         input_quality=context.input_quality,

@@ -11,7 +11,9 @@ from __future__ import annotations
 import json
 import os
 import re
+import sqlite3
 import tempfile
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -22,6 +24,7 @@ from pydantic import BaseModel
 _AM_RE = re.compile(r"AM-(\d+)")
 _AM_ID_RE = re.compile(r"(?:AM-)?(\d+)", re.IGNORECASE)
 _RUN_ID_RE = re.compile(r"\d{4}-\d{2}-\d{2}_[a-z0-9]+(?:-[a-z0-9]+)*")
+_BRIEF_SOURCE_RE = re.compile(r"^source:\s*(.+)$", re.MULTILINE)
 
 
 def default_workspace() -> Path:
@@ -79,31 +82,62 @@ class Workspace:
         return path
 
     def next_am_number(self) -> int:
-        """Global sequential numbering: max existing AM id + 1 (start at 1)."""
-        return self._highest_am_number() + 1
+        """Return the next number without reserving it."""
+        return max(self._highest_am_number(), self._counter_value()) + 1
 
     def reserve_am_numbers(self, count: int) -> list[int]:
         """Atomically reserve a monotonic AM-ID range across concurrent runs."""
         if count < 1:
             raise ValueError("count must be at least 1")
-        import fcntl
-
         self.ensure()
-        lock_path = self.root / ".am-id.lock"
-        counter_path = self.root / ".am-counter"
-        with lock_path.open("a+", encoding="utf-8") as lock:
-            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        database = self.root / ".am-ids.sqlite3"
+        with _legacy_counter_lock(self.root):
+            connection = sqlite3.connect(database, timeout=30.0, isolation_level=None)
             try:
-                try:
-                    counter = int(counter_path.read_text(encoding="utf-8").strip())
-                except (FileNotFoundError, ValueError):
-                    counter = 0
-                start = max(counter, self._highest_am_number()) + 1
+                connection.execute("PRAGMA busy_timeout = 30000")
+                connection.execute("BEGIN IMMEDIATE")
+                connection.execute(
+                    "CREATE TABLE IF NOT EXISTS am_counter (id INTEGER PRIMARY KEY CHECK (id = 1), value INTEGER NOT NULL)"
+                )
+                row = connection.execute(
+                    "SELECT value FROM am_counter WHERE id = 1"
+                ).fetchone()
+                stored = int(row[0]) if row else 0
+                start = max(stored, self._legacy_counter(), self._highest_am_number()) + 1
                 end = start + count - 1
-                write_text(counter_path, f"{end}\n")
+                connection.execute(
+                    "INSERT INTO am_counter (id, value) VALUES (1, ?) "
+                    "ON CONFLICT(id) DO UPDATE SET value = excluded.value",
+                    (end,),
+                )
+                connection.execute("COMMIT")
+                write_text(self.root / ".am-counter", f"{end}\n")
                 return list(range(start, end + 1))
+            except Exception:
+                connection.rollback()
+                raise
             finally:
-                fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+                connection.close()
+
+    def _legacy_counter(self) -> int:
+        try:
+            return int((self.root / ".am-counter").read_text(encoding="utf-8").strip())
+        except (FileNotFoundError, ValueError, OSError):
+            return 0
+
+    def _counter_value(self) -> int:
+        database = self.root / ".am-ids.sqlite3"
+        if not database.is_file():
+            return self._legacy_counter()
+        try:
+            connection = sqlite3.connect(database, timeout=30.0)
+            row = connection.execute(
+                "SELECT value FROM am_counter WHERE id = 1"
+            ).fetchone()
+            connection.close()
+        except sqlite3.Error:
+            return self._legacy_counter()
+        return int(row[0]) if row else self._legacy_counter()
 
     def _highest_am_number(self) -> int:
         highest = 0
@@ -133,7 +167,30 @@ class Workspace:
         """Find one brief by a validated, normalized AM identifier."""
         am_id = normalize_am_id(value)
         matches = sorted(self.opps_dir.rglob(f"{am_id}-*.md")) if self.opps_dir.exists() else []
-        return (am_id, matches[0]) if matches else None
+        visible = [path for path in matches if self._brief_is_published(path, am_id)]
+        return (am_id, visible[0]) if visible else None
+
+    def _brief_is_published(self, path: Path, am_id: str) -> bool:
+        """Hide briefs whose source run did not complete publication."""
+        try:
+            match = _BRIEF_SOURCE_RE.search(path.read_text(encoding="utf-8"))
+            if match is None:
+                return False
+            source_run = json.loads(match.group(1))
+            if not isinstance(source_run, str) or not _RUN_ID_RE.fullmatch(source_run):
+                return False
+            manifest = self.runs_dir / source_run / "run.json"
+            if not manifest.is_file():
+                return False
+            data = read_json(manifest)
+        except (OSError, ValueError):
+            return False
+        return (
+            isinstance(data, dict)
+            and data.get("status") == "completed"
+            and data.get("publication_status") == "complete"
+            and am_id in data.get("opportunities", [])
+        )
 
     def run_report_path(self, run_id: str) -> Path:
         """Return a report path for a syntactically valid direct run child."""
@@ -155,6 +212,24 @@ def normalize_am_id(value: str) -> str:
     if match is None or int(match.group(1)) < 1:
         raise ValueError(f"Invalid opportunity id: {value!r}")
     return f"AM-{int(match.group(1)):03d}"
+
+
+@contextmanager
+def _legacy_counter_lock(root: Path):
+    """Coordinate with the pre-SQLite POSIX allocator during migration."""
+    lock_path = root / ".am-id.lock"
+    try:
+        import fcntl
+    except ImportError:
+        # SQLite remains the portable allocator on platforms without fcntl.
+        yield
+        return
+    with lock_path.open("a+", encoding="utf-8") as lock:
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
 
 
 def write_text(path: Path, text: str) -> None:

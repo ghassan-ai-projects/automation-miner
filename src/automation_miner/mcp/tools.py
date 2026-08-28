@@ -18,6 +18,18 @@ from automation_miner.models.config import load_config
 INPUT_TYPES = ("auto", "idea", "file", "kb")
 
 
+def _run_failure_details(exc: BaseException) -> dict[str, str]:
+    run_id = str(getattr(exc, "run_id", ""))
+    if not run_id:
+        return {}
+    run_dir = str(getattr(exc, "run_dir", ""))
+    return {
+        "run_id": run_id,
+        "run_dir": run_dir,
+        "error": str(Path(run_dir) / "error.json"),
+    }
+
+
 def _mine_domain(root: Path, args: dict[str, Any]) -> dict[str, Any]:
     from automation_miner.graph.build import run_mine
 
@@ -34,6 +46,10 @@ def _mine_domain(root: Path, args: dict[str, Any]) -> dict[str, Any]:
     path = Path(raw_input)
     if input_type == "auto":
         input_type = "kb" if path.is_dir() else "file" if path.is_file() else "idea"
+    elif input_type == "file" and not path.is_file():
+        raise MCPError(MCPErrorCode.VALIDATION_ERROR, f"file does not exist: {raw_input}")
+    elif input_type == "kb" and not path.is_dir():
+        raise MCPError(MCPErrorCode.VALIDATION_ERROR, f"kb directory does not exist: {raw_input}")
 
     raw_iterations = args.get("max_iterations", 2)
     if isinstance(raw_iterations, bool):
@@ -73,7 +89,13 @@ def _mine_domain(root: Path, args: dict[str, Any]) -> dict[str, Any]:
     try:
         result = run_mine(**kwargs)
     except ValueError as exc:
+        details = _run_failure_details(exc)
+        if details:
+            raise MCPError(MCPErrorCode.INTERNAL_ERROR, str(exc), details=details) from exc
         raise MCPError(MCPErrorCode.VALIDATION_ERROR, str(exc)) from exc
+    except Exception as exc:
+        details = _run_failure_details(exc)
+        raise MCPError(MCPErrorCode.INTERNAL_ERROR, str(exc), details=details) from exc
     run_dir = Path(result["run_dir"])
     summary_path = run_dir / "summary.json"
     # The summary is returned inline so a driving agent does not have to choose
@@ -172,6 +194,28 @@ def _get_run_summary(root: Path, args: dict[str, Any]) -> dict[str, Any]:
     return {"run_id": run_id, "summary": read_json(path)}
 
 
+def _get_run_manifest(root: Path, args: dict[str, Any]) -> dict[str, Any]:
+    run_id = str(args.get("run_id", ""))
+    try:
+        path = Workspace(root).run_report_path(run_id).with_name("run.json")
+    except ValueError as exc:
+        raise MCPError(MCPErrorCode.VALIDATION_ERROR, str(exc)) from exc
+    if not path.is_file():
+        raise MCPError(MCPErrorCode.NOT_FOUND, f"No manifest for run {run_id!r}")
+    return {"run_id": run_id, "manifest": read_json(path)}
+
+
+def _get_run_error(root: Path, args: dict[str, Any]) -> dict[str, Any]:
+    run_id = str(args.get("run_id", ""))
+    try:
+        path = Workspace(root).run_report_path(run_id).with_name("error.json")
+    except ValueError as exc:
+        raise MCPError(MCPErrorCode.VALIDATION_ERROR, str(exc)) from exc
+    if not path.is_file():
+        raise MCPError(MCPErrorCode.NOT_FOUND, f"No error for run {run_id!r}")
+    return {"run_id": run_id, "error": read_json(path)}
+
+
 def _list_readers(root: Path, args: dict[str, Any]) -> dict[str, Any]:
     from automation_miner.readers import build_registry
 
@@ -224,6 +268,8 @@ HANDLERS = {
     "query_registry": _query_registry,
     "get_run_report": _get_run_report,
     "get_run_summary": _get_run_summary,
+    "get_run_manifest": _get_run_manifest,
+    "get_run_error": _get_run_error,
     "list_readers": _list_readers,
     "reindex": _reindex,
     "server_info": _server_info,
@@ -288,6 +334,16 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
         "properties": {"run_id": {"type": "string"}},
         "required": ["run_id"],
     },
+    "get_run_manifest": {
+        "type": "object",
+        "properties": {"run_id": {"type": "string"}},
+        "required": ["run_id"],
+    },
+    "get_run_error": {
+        "type": "object",
+        "properties": {"run_id": {"type": "string"}},
+        "required": ["run_id"],
+    },
     "list_readers": {"type": "object", "properties": {}},
     "reindex": {"type": "object", "properties": {}},
     "server_info": {"type": "object", "properties": {}},
@@ -308,6 +364,8 @@ TOOL_DESCRIPTIONS = {
         "token usage, and one row per opportunity. Prefer this over get_run_report "
         "when deciding what to act on."
     ),
+    "get_run_manifest": "Return the terminal manifest for one run, including status, budget, and usage.",
+    "get_run_error": "Return the structured failure artifact for one failed run.",
     "list_readers": (
         "List document readers, the file formats each handles, and whether its "
         "dependencies are installed."

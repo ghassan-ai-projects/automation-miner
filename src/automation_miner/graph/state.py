@@ -13,11 +13,13 @@ class MinerState(TypedDict, total=False):
     workspace: str
     run_dir: str
     run_id: str
+    status: str
     input_kind: str  # idea | file | kb
     input_value: str
     constraints: str
     policy_constraints: str
     constraint_params: dict[str, str]
+    run_budget: dict[str, Any]
     max_iterations: int
     created: str
     profile: str

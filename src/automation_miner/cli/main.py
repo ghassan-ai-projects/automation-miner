@@ -149,6 +149,8 @@ def _cmd_mine(args: argparse.Namespace) -> int:
     entries = summary.get("opportunities", [])
 
     print(f"Run: {result['run_id']}")
+    if summary.get("status"):
+        print(f"Status: {summary['status']}")
     if context:
         line = (
             f"Context: {context.get('included_files', 0)} file(s), "
@@ -185,6 +187,12 @@ def _cmd_mine(args: argparse.Namespace) -> int:
             f"{usage.get('total_tokens', 0):,} tokens ({kind})"
             + (f", {usage['retries']} retried" if usage.get("retries") else "")
         )
+        budget = summary.get("budget", {})
+        if budget:
+            print(
+                f"Budget: {usage.get('attempts', 0)}/{budget.get('max_attempts', '?')} attempts, "
+                f"{usage.get('total_tokens', 0):,}/{budget.get('max_tokens', '?')} tokens"
+            )
     for note in summary.get("notes", [])[:5]:
         print(f"Note: {note}")
     print(f"Report: {result.get('report_path', '')}")

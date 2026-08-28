@@ -30,3 +30,23 @@
 
 The review confirms offline correctness only. It does not prove live-provider
 behavior, semantic grounding, or product value.
+
+## Phase 3 review loop
+
+**Scope:** Per-run execution budgets, retries and usage telemetry, terminal
+failure artifacts, run attribution, and publication visibility.
+
+The independent correctness loop identified and required fixes for hard token
+admission under concurrent attempts, retry/deadline handling, exact versus
+estimated usage, failed-attempt accounting, and terminal failure `calls`
+values. The implementation now reserves prompt plus route-cap tokens before
+each attempt, separates logical calls from attempts, preserves provider
+exactness, records failed attempts with `calls=0`, and covers the behavior in
+`tests/test_execution.py`, `tests/test_execution_provider.py`, and
+`tests/test_graph.py`.
+
+The latest bounded re-review was reissued after the preceding reviewer context
+timed out. It had not returned a verdict at the time of this record; that
+orchestration gap is not counted as approval. Phase 3 remains eligible for
+commit only after the final independent verdict is recorded or the same review
+is independently completed by another reviewer pair.

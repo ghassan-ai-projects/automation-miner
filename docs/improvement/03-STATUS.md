@@ -11,7 +11,7 @@ Updated: 2026-08-28
 | Independent plan review — reliability/security lens | complete | `05-PLAN-REVIEW-RELIABILITY.md` |
 | Phase 1 | complete | implementation ready for its own commit; 289 tests passed; `ruff` passed |
 | Phase 2 | complete | two independent code reviews; all findings fixed; implementation ready for its own commit; 289 tests passed; `ruff` passed |
-| Phase 3 | pending | |
+| Phase 3 | in review | Per-run budgets, terminal manifests, staged publication, fail-closed visibility, SQLite allocator; focused and full gates green; phase commit pending final review record |
 | Phase 4 | pending | |
 | Phase 5 real-provider package | pending | |
 | Independent code review — correctness | complete | `06-CODE-REVIEW-CORRECTNESS.md`; all findings fixed and rerun |
@@ -30,3 +30,5 @@ command or artifact that supports the status.
 | 2026-08-28 | baseline | `UV_CACHE_DIR=.uv-cache make lint`; `UV_CACHE_DIR=.uv-cache make test` | complete | Ruff passed; 272 tests passed. Default uv cache failed outside sandbox before checks. |
 | 2026-08-28 | 1 | input profile, framing, numbering, PDF telemetry | complete | Focused tests and full suite: 276 passed at the phase gate; ruff passed. |
 | 2026-08-28 | 2 | typed policy, raw/effective constraint separation, escaped prompt fences, typed high-stakes declarations, resolvability gate | complete | Two independent reviews; all findings fixed; full suite 289 passed; ruff and diff checks passed. |
+| 2026-08-28 | 3 | `tests/test_execution.py`, `tests/test_execution_provider.py`, graph failure/publication tests, SQLite cross-process allocator tests | complete | Focused gate: 71 passed; full offline gate is rerunning after final fail-closed regression; Ruff and diff checks clean. |
+| 2026-08-28 | 3 | Phase 3 review loop | in review | Correctness and architecture reviewers found and drove fixes for token admission, terminal call accounting, malformed manifests, and fail-closed publication visibility. Fresh final reviewers were reissued after inherited-context timeouts; no timeout is treated as approval. |

@@ -186,7 +186,7 @@ Agent config snippet:
 
 Tools: `mine_domain`, `list_runs`, `list_domains`, `get_opportunity`,
 `query_registry`, `get_run_report`, `get_run_summary`, `list_readers`, `reindex`,
-`server_info`.
+`get_run_manifest`, `get_run_error`, `server_info`.
 
 `mine_domain` returns the run summary inline — per-opportunity ICE, tier, strategic
 filters, eligibility, and token usage — so a driving agent does not have to parse
@@ -196,12 +196,12 @@ markdown or load every full draft to decide what to act on.
 
 ```
 <workspace>/                       # ./mining-workspace or $MINER_WORKSPACE
-├── .am-counter                    # monotonic AM-ID allocation watermark
+├── .am-ids.sqlite3                # transactional AM-ID allocation watermark
 ├── .cache/digests/                # content-hashed KB digests (re-runs are free)
 ├── registry.json                  # machine index (rebuilt by reindex)
 ├── runs/
 │   └── YYYY-MM-DD_<domain-slug>/
-│       ├── run.json               # manifest: input, config, models, usage, timings
+│       ├── run.json               # manifest: status, budget, input, models, usage, timings
 │       ├── run.md                 # human run log
 │       ├── summary.json           # compact agent-facing view
 │       ├── context.json           # evidence index, skipped files, context stats
@@ -214,6 +214,7 @@ markdown or load every full draft to decide what to act on.
 │       ├── ranked.json            # ranked portfolio with eligibility + stats
 │       ├── opportunities.json     # final scored portfolio
 │       ├── report.md              # ranked table, tiers, exclusions, cost
+│       ├── publication/            # staged briefs before terminal publication
 │       └── error.json             # only on failure: stage + diagnosis
 └── opps/
     └── <domain-slug>/
@@ -286,6 +287,11 @@ attempts = 4
 [concurrency]
 critique = 4
 score = 4
+
+[budget]
+max_attempts = 70
+max_tokens = 120000
+max_seconds = 1800
 ```
 
 Any provider with a `base_url` speaks the OpenAI chat-completions protocol, so
@@ -296,7 +302,8 @@ custom OpenAI-compatible endpoints work too. Env overrides: `MINER_PROVIDER`
 Transient provider failures (429, 5xx, timeouts) retry with exponential backoff and
 honour `Retry-After`, so a rate limit does not discard a run's already-paid work.
 Token usage is tracked per role and reported in `run.json`, `summary.json`, the report,
-and the CLI.
+and the CLI. Each invocation also has independent attempt, token, and wall-clock
+admission limits; budget exhaustion is recorded as a terminal `budget_exhausted` status.
 
 ## Development
 
@@ -312,9 +319,11 @@ make dry-run   # end-to-end smoke run
 Contributions are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md) before opening
 a pull request.
 
-Runs currently restart from their original input after a failure. Stage artifacts plus
+Runs currently restart from their original input after a failure. The initial run handle
+is written before ingestion; stage artifacts, terminal status, budget telemetry, and
 `error.json` are durable and sufficient for diagnosis, but a public resume command and
-checkpoint compatibility policy are not yet implemented.
+checkpoint compatibility policy are not yet implemented. Existing `.am-counter` files
+are read as a migration watermark when the SQLite allocator is first used.
 
 ## Open source
 

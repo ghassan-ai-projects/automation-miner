@@ -32,7 +32,7 @@ from langgraph.types import Send
 
 from automation_miner import ingest as ing
 from automation_miner.artifacts.briefs import render_brief, title_slug
-from automation_miner.artifacts.registry import reindex
+from automation_miner.artifacts.registry import parse_frontmatter, reindex
 from automation_miner.artifacts.reports import render_report, render_run_md, render_summary
 from automation_miner.artifacts.workspace import Workspace, read_json, write_json, write_text
 from automation_miner.constraints import normalize_constraint_params, render_constraints
@@ -45,7 +45,8 @@ from automation_miner.context import (
 )
 from automation_miner.graph.loop import run_critique_loop
 from automation_miner.graph.state import MinerState
-from automation_miner.models.client import MinerModel
+from automation_miner.execution import BudgetExceeded, RunExecutionContext
+from automation_miner.models.client import MinerModel, RunScopedModel
 from automation_miner.models.config import load_config
 from automation_miner.prompts import (
     DOMAIN_MAP_SYSTEM,
@@ -79,6 +80,7 @@ from automation_miner.schemas import (
     OpportunityDraft,
     InputQuality,
     RunManifest,
+    RunBudget,
     StageFailure,
     Tier,
 )
@@ -104,13 +106,24 @@ def build_graph(
     """Build the compiled mining pipeline for one model client + workspace."""
     budget = budget or ContextBudget.from_config(model.config.context)
 
+    def _mark_stage(stage: str) -> None:
+        execution = getattr(model, "execution", None)
+        if execution is not None:
+            execution.set_stage(stage)
+            execution.remaining_seconds()
+
     def _index(state: MinerState) -> EvidenceIndex:
         return EvidenceIndex([Chunk.model_validate(c) for c in state["context"]["chunks"]])
 
     def _timed(state: MinerState, stage: str, started: float) -> dict[str, float]:
-        return {**state.get("stage_seconds", {}), stage: round(time.time() - started, 2)}
+        elapsed = round(time.time() - started, 2)
+        execution = getattr(model, "execution", None)
+        if execution is not None:
+            execution.record_stage(stage, elapsed)
+        return {**state.get("stage_seconds", {}), stage: elapsed}
 
     def ingest_node(state: MinerState) -> dict[str, Any]:
+        _mark_stage("ingest")
         started = time.time()
         kind, value = state["input_kind"], state["input_value"]
         registry = build_registry(model.config.readers)
@@ -148,7 +161,7 @@ def build_graph(
                 "raw_constraints": state.get("policy_constraints", ""),
             }
         )
-        run_dir = workspace.new_run_dir(packet.domain_slug)
+        run_dir = Path(state["run_dir"])
         write_json(run_dir / "context.json", packet)
         return {
             "context": packet.model_dump(mode="json"),
@@ -158,6 +171,7 @@ def build_graph(
         }
 
     def domain_map_node(state: MinerState) -> dict[str, Any]:
+        _mark_stage("domain_map")
         started = time.time()
         ctx = ContextPacket.model_validate(state["context"])
         assessment = InputAssessment.model_validate(state["input_assessment"])
@@ -188,6 +202,7 @@ def build_graph(
         }
 
     def assess_input_node(state: MinerState) -> dict[str, Any]:
+        _mark_stage("input_assessment")
         started = time.time()
         ctx = ContextPacket.model_validate(state["context"])
         result = model.call_json(
@@ -213,6 +228,8 @@ def build_graph(
         return [Send("analyze_layer", {**shared, "layer": layer.value}) for layer in LAYER_ORDER]
 
     def analyze_layer_node(state: MinerState) -> dict[str, Any]:
+        _mark_stage("layer_analysis")
+        started = time.time()
         ctx = ContextPacket.model_validate(state["context"])
         layer = Layer(state["layer"])
         domain_map = DomainMap.model_validate(state["domain_map"])
@@ -242,6 +259,10 @@ def build_graph(
         )
         result = result.model_copy(update={"layer": layer})
         write_json(Path(state["run_dir"]) / "layers" / f"{layer.value}.json", result)
+        execution = getattr(model, "execution", None)
+        if execution is not None:
+            execution.record_stage("layer_analysis", time.time() - started)
+            execution.remaining_seconds()
         return {"layer_analyses": [result.model_dump(mode="json")]}
 
     def _prior_ideas(domain_slug: str) -> list[dict[str, Any]]:
@@ -265,6 +286,7 @@ def build_graph(
         ]
 
     def plan_portfolio_node(state: MinerState) -> dict[str, Any]:
+        _mark_stage("plan_portfolio")
         started = time.time()
         ctx = ContextPacket.model_validate(state["context"])
         analyses = sorted(
@@ -304,6 +326,8 @@ def build_graph(
         ]
 
     def draft_candidate_node(state: MinerState) -> dict[str, Any]:
+        _mark_stage("draft_opportunities")
+        started = time.time()
         ctx = ContextPacket.model_validate(state["context"])
         candidate = OpportunityCandidate.model_validate(state["candidate"])
         selected = _index(state).select(
@@ -335,9 +359,14 @@ def build_graph(
             / f"candidate-{title_slug(candidate.title)}.json",
             draft,
         )
+        execution = getattr(model, "execution", None)
+        if execution is not None:
+            execution.record_stage("draft_opportunities", time.time() - started)
+            execution.remaining_seconds()
         return {"drafts": [draft.model_dump(mode="json")]}
 
     def critique_refine_node(state: MinerState) -> dict[str, Any]:
+        _mark_stage("critique_refine")
         started = time.time()
         run_dir = Path(state["run_dir"])
         ctx = ContextPacket.model_validate(state["context"])
@@ -392,6 +421,7 @@ def build_graph(
         return {"refined": refined, "stage_seconds": _timed(state, "critique_refine", started)}
 
     def score_node(state: MinerState) -> dict[str, Any]:
+        _mark_stage("score")
         started = time.time()
         constraints = state["constraints"]
         policy = parse_constraint_policy(
@@ -443,6 +473,7 @@ def build_graph(
         }
 
     def rank_filter_node(state: MinerState) -> dict[str, Any]:
+        _mark_stage("rank_filter")
         started = time.time()
         ranked = apply_portfolio_policy(
             [Opportunity.model_validate(o) for o in state["opportunities"]],
@@ -463,6 +494,7 @@ def build_graph(
         }
 
     def publish_node(state: MinerState) -> dict[str, Any]:
+        _mark_stage("publish")
         started = time.time()
         run_dir = Path(state["run_dir"])
         ctx = ContextPacket.model_validate(state["context"])
@@ -470,12 +502,13 @@ def build_graph(
         live = published(ranked)
         stats = portfolio_stats(ranked)
 
-        opp_dir = workspace.opp_dir(ctx.domain_slug)
+        staging_dir = run_dir / "publication" / ctx.domain_slug
+        opp_dir = workspace.opps_dir / ctx.domain_slug
         brief_paths: dict[str, str] = {}
         for opp in live:
             fname = f"{opp.am_id}-{title_slug(opp.draft.title)}.md"
             write_text(
-                opp_dir / fname,
+                staging_dir / fname,
                 render_brief(opp, state["run_id"], input_quality=ctx.input_quality),
             )
             brief_paths[opp.am_id] = str(opp_dir / fname)
@@ -492,8 +525,52 @@ def build_graph(
         )
 
         usage = model.usage.snapshot()
+        run_budget = RunBudget.model_validate(state["run_budget"])
         duration = time.time() - state.get("start_ts", time.time())
         stage_seconds = _timed(state, "publish", started)
+        execution = getattr(model, "execution", None)
+        if execution is not None:
+            stage_seconds = {**execution.snapshot().stage_seconds, **stage_seconds}
+
+        manifest = RunManifest(
+            run_id=state["run_id"],
+            domain=ctx.domain,
+            domain_slug=ctx.domain_slug,
+            constraints=ctx.constraints,
+            raw_constraints=ctx.raw_constraints,
+            constraint_params=ctx.constraint_params,
+            source_kind=ctx.source_kind,
+            source_value=state["input_value"],
+            analysis_mode=state["analysis_mode"],
+            requested_mode=state["requested_mode"],
+            created=state["created"],
+            finished=f"{datetime.now():%Y-%m-%dT%H:%M:%S}",
+            duration_seconds=round(duration, 2),
+            max_iterations=state["max_iterations"],
+            profile=state.get("profile", "default"),
+            config_source=model.config.source,
+            prompt_version=PROMPT_VERSION,
+            dry_run=model.dry_run,
+            models=model.routing_table(),
+            opportunities=[o.am_id for o in live],
+            filtered=[o.am_id for o in ranked if not o.published],
+            stage_seconds=stage_seconds,
+            usage=usage,
+            context=ctx.stats,
+            input_quality=ctx.input_quality,
+            retained_quality=ctx.retained_quality,
+            status="completed",
+            publication_status="pending",
+            budget=run_budget,
+        )
+        write_json(run_dir / "run.json", manifest)
+
+        for staged_path in staging_dir.glob("*.md"):
+            target = opp_dir / staged_path.name
+            if target.exists():
+                raise RuntimeError(f"Refusing to overwrite existing brief: {target}")
+            target.parent.mkdir(parents=True, exist_ok=True)
+            staged_path.replace(target)
 
         summary = render_summary(
             run_id=state["run_id"],
@@ -505,6 +582,9 @@ def build_graph(
             duration_seconds=round(duration, 2),
             dry_run=model.dry_run,
             brief_paths=brief_paths,
+            status="completed",
+            publication_status="complete",
+            budget=run_budget,
         )
         write_json(run_dir / "summary.json", summary)
         write_text(
@@ -528,41 +608,29 @@ def build_graph(
                 stats=stats,
                 usage=usage,
                 models=model.routing_table(),
+                status="completed",
+                publication_status="complete",
+                budget=run_budget,
             ),
         )
-
-        manifest = RunManifest(
-            run_id=state["run_id"],
-            domain=ctx.domain,
-            domain_slug=ctx.domain_slug,
-            constraints=ctx.constraints,
-            raw_constraints=ctx.raw_constraints,
-            constraint_params=ctx.constraint_params,
-            source_kind=ctx.source_kind,
-            source_value=state["input_value"],
-            analysis_mode=state["analysis_mode"],
-            created=state["created"],
-            finished=f"{datetime.now():%Y-%m-%dT%H:%M:%S}",
-            duration_seconds=round(duration, 2),
-            max_iterations=state["max_iterations"],
-            profile=state.get("profile", "default"),
-            config_source=model.config.source,
-            prompt_version=PROMPT_VERSION,
-            dry_run=model.dry_run,
-            models=model.routing_table(),
-            opportunities=[o.am_id for o in live],
-            filtered=[o.am_id for o in ranked if not o.published],
-            stage_seconds=stage_seconds,
-            usage=usage,
-            context=ctx.stats,
-            input_quality=ctx.input_quality,
-            retained_quality=ctx.retained_quality,
+        if execution is not None:
+            execution.remaining_seconds()
+        write_json(
+            run_dir / "run.json",
+            manifest.model_copy(
+                update={
+                    "finished": f"{datetime.now():%Y-%m-%dT%H:%M:%S}",
+                    "publication_status": "complete",
+                }
+            ),
         )
-        write_json(run_dir / "run.json", manifest)
         reindex(workspace.root)
+        if execution is not None:
+            execution.remaining_seconds()
         return {
             "report_path": str(run_dir / "report.md"),
             "summary_path": str(run_dir / "summary.json"),
+            "status": "completed",
             "stage_seconds": stage_seconds,
         }
 
@@ -645,29 +713,96 @@ def run_mine(
     if model is None:
         model = MinerModel(load_config(workspace_path, profile), dry_run=dry_run)
     workspace = Workspace(workspace_path)
+    run_budget = RunBudget()
+    if idea is not None:
+        preliminary_domain = " ".join(idea.split())[: ing.MAX_DOMAIN_CHARS] or "untitled-domain"
+    elif file is not None:
+        preliminary_domain = file.stem or "untitled-file"
+    else:
+        preliminary_domain = kb.name if kb is not None else "untitled-kb"
+    preliminary_slug = ing.slugify(preliminary_domain)
     try:
         workspace.ensure()
+        run_dir = workspace.new_run_dir(preliminary_slug)
+        run_id = run_dir.name
+        created = f"{datetime.now():%Y-%m-%dT%H:%M:%S}"
+        budget_error: Exception | None = None
+        try:
+            run_budget = RunBudget.model_validate(model.config.budget)
+        except Exception as exc:
+            budget_error = exc
+        execution = RunExecutionContext(run_id, run_budget)
+        scoped_model = RunScopedModel(model, execution)
+        source_value = value or "(empty input)"
+        models: dict[str, str] = {}
+        try:
+            models = model.routing_table()
+        except Exception:
+            pass
+        initial_manifest = RunManifest(
+            run_id=run_id,
+            domain=preliminary_domain,
+            domain_slug=preliminary_slug,
+            constraints=effective_constraints,
+            raw_constraints=constraints,
+            constraint_params=normalized_params,
+            source_kind=kind,
+            source_value=source_value,
+            analysis_mode=(
+                requested_mode.value
+                if requested_mode is not AnalysisMode.AUTO
+                else AnalysisMode.OPERATIONAL.value
+            ),
+            requested_mode=requested_mode.value,
+            status="running",
+            budget=run_budget,
+            created=created,
+            max_iterations=max_iterations,
+            profile=profile,
+            config_source=model.config.source,
+            prompt_version=PROMPT_VERSION,
+            dry_run=model.dry_run,
+            models=models,
+        )
+        try:
+            write_json(run_dir / "run.json", initial_manifest)
+        except Exception as exc:
+            _record_failure(run_dir, exc, execution)
+            setattr(exc, "run_id", run_id)
+            setattr(exc, "run_dir", str(run_dir))
+            raise
+        if budget_error is not None:
+            _record_failure(run_dir, budget_error, execution)
+            setattr(budget_error, "run_id", run_id)
+            setattr(budget_error, "run_dir", str(run_dir))
+            raise budget_error
         initial: dict[str, Any] = {
             "workspace": str(workspace_path),
+            "run_dir": str(run_dir),
+            "run_id": run_id,
             "input_kind": kind,
             "input_value": value,
             "constraints": effective_constraints,
             "policy_constraints": constraints,
             "constraint_params": normalized_params,
+            "run_budget": run_budget.model_dump(mode="json"),
+            "status": "running",
             "max_iterations": max_iterations,
             "profile": profile,
             "requested_mode": requested_mode.value,
-            "created": f"{datetime.now():%Y-%m-%dT%H:%M:%S}",
+            "created": created,
             "start_ts": time.time(),
             "layer_analyses": [],
             "drafts": [],
             "stage_seconds": {},
         }
-        graph = build_graph(model, workspace, preflight_callback=preflight_callback)
         try:
+            graph = build_graph(scoped_model, workspace, preflight_callback=preflight_callback)
             result: MinerState = graph.invoke(initial)  # type: ignore[assignment]
         except Exception as exc:
-            _record_failure(workspace, exc)
+            _record_failure(run_dir, exc, execution)
+            setattr(exc, "run_id", run_id)
+            setattr(exc, "run_dir", str(run_dir))
             raise
         return result
     finally:
@@ -675,20 +810,18 @@ def run_mine(
             model.close()
 
 
-def _record_failure(workspace: Workspace, exc: BaseException) -> None:
-    """Write error.json into the newest run directory.
-
-    Without this a failed stage left only ``context.json`` behind, with nothing
-    explaining what broke — which contradicts artifacts being the source of truth.
-    """
+def _record_failure(
+    run_dir: Path, exc: BaseException, execution: RunExecutionContext
+) -> None:
+    """Persist terminal failure state into the exact run that raised."""
     try:
-        runs = sorted(
-            (p for p in workspace.runs_dir.iterdir() if p.is_dir()),
-            key=lambda p: p.stat().st_mtime,
-        )
-        if not runs:
-            return
-        run_dir = runs[-1]
+        snapshot = execution.snapshot()
+        status = "budget_exhausted" if isinstance(exc, BudgetExceeded) else "failed"
+        quarantined = _quarantine_run_briefs(run_dir)
+        try:
+            reindex(run_dir.parent.parent)
+        except Exception:
+            pass
         written = sorted(
             str(p.relative_to(run_dir)) for p in run_dir.rglob("*") if p.is_file()
         )
@@ -696,35 +829,81 @@ def _record_failure(workspace: Workspace, exc: BaseException) -> None:
             run_dir / "error.json",
             StageFailure(
                 run_id=run_dir.name,
-                stage=_infer_stage(written),
+                stage=snapshot.stage,
                 error_type=type(exc).__name__,
                 error=str(exc)[:2_000],
                 created=f"{datetime.now():%Y-%m-%dT%H:%M:%S}",
+                status=status,
+                budget=execution.budget,
+                budget_limit=getattr(exc, "limit", ""),
+                observed_attempts=snapshot.attempts,
+                observed_tokens=snapshot.tokens,
+                stage_seconds=snapshot.stage_seconds,
+                usage=execution.usage.snapshot(),
                 artifacts_written=written,
+                quarantined_artifacts=quarantined,
             ),
         )
-    except OSError:
+        manifest_path = run_dir / "run.json"
+        if manifest_path.is_file():
+            manifest = RunManifest.model_validate(read_json(manifest_path))
+            write_json(
+                manifest_path,
+                manifest.model_copy(
+                    update={
+                        "status": status,
+                        "publication_status": "pending",
+                        "finished": f"{datetime.now():%Y-%m-%dT%H:%M:%S}",
+                        "duration_seconds": snapshot.elapsed_seconds,
+                        "usage": execution.usage.snapshot(),
+                        "stage_seconds": snapshot.stage_seconds,
+                    }
+                ),
+            )
+        summary_path = run_dir / "summary.json"
+        if summary_path.is_file():
+            summary = read_json(summary_path)
+            if isinstance(summary, dict):
+                summary.update(
+                    {
+                        "status": status,
+                        "publication_status": "pending",
+                        "duration_seconds": snapshot.elapsed_seconds,
+                        "usage": execution.usage.snapshot().model_dump(mode="json"),
+                    }
+                )
+                write_json(summary_path, summary)
+        report_path = run_dir / "report.md"
+        if report_path.is_file():
+            report = report_path.read_text(encoding="utf-8")
+            report = report.replace(
+                "> **Status:** completed  ", f"> **Status:** {status}  ", 1
+            )
+            report = report.replace(
+                "> **Publication:** complete  ", "> **Publication:** pending  ", 1
+            )
+            write_text(report_path, report)
+    except Exception:
+        # Failure recording must never replace the original pipeline error.
         pass
 
 
-# Artifact each stage produces, in pipeline order. The last one present tells us
-# how far the run got.
-_STAGE_ARTIFACTS: tuple[tuple[str, str], ...] = (
-    ("context.json", "input_assessment"),
-    ("input_assessment.json", "domain_map"),
-    ("domain_map.json", "layer_analysis"),
-    ("layers", "plan_portfolio"),
-    ("candidate_portfolio.json", "draft_opportunities"),
-    ("drafts", "critique_refine"),
-    ("scores.json", "rank_filter"),
-    ("ranked.json", "publish"),
-)
-
-
-def _infer_stage(written: list[str]) -> str:
-    """Name the stage that most likely failed, from what was written."""
-    stage = "ingest"
-    for marker, next_stage in _STAGE_ARTIFACTS:
-        if any(path == marker or path.startswith(f"{marker}/") for path in written):
-            stage = next_stage
-    return stage
+def _quarantine_run_briefs(run_dir: Path) -> list[str]:
+    """Move briefs from an incomplete run out of the published tree."""
+    workspace_root = run_dir.parent.parent
+    opps_dir = workspace_root / "opps"
+    quarantine_root = run_dir / "quarantine" / "opps"
+    moved: list[str] = []
+    if not opps_dir.is_dir():
+        return moved
+    for brief in opps_dir.rglob("AM-*.md"):
+        try:
+            if parse_frontmatter(brief.read_text(encoding="utf-8")).get("source") != run_dir.name:
+                continue
+            target = quarantine_root / brief.relative_to(opps_dir)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            brief.replace(target)
+            moved.append(str(target.relative_to(run_dir)))
+        except (OSError, ValueError):
+            continue
+    return moved

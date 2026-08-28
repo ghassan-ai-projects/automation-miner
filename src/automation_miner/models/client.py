@@ -26,7 +26,9 @@ import os
 import random
 import threading
 import time
-from typing import Any, TypeVar
+from contextlib import contextmanager
+from contextvars import ContextVar
+from typing import TYPE_CHECKING, Any, TypeVar
 
 import httpx
 from pydantic import BaseModel, ValidationError
@@ -38,10 +40,31 @@ from automation_miner.schemas import RoleUsage, RunUsage
 
 T = TypeVar("T", bound=BaseModel)
 
+if TYPE_CHECKING:
+    from automation_miner.execution import RunExecutionContext
+
 MAX_JSON_ATTEMPTS = 3
+
+_ACTIVE_EXECUTION: ContextVar["RunExecutionContext | None"] = ContextVar(
+    "automation_miner_execution", default=None
+)
+_ACTIVE_USAGE: ContextVar["UsageTracker | None"] = ContextVar(
+    "automation_miner_usage", default=None
+)
 
 # Statuses worth retrying: rate limits, timeouts, and transient upstream faults.
 RETRYABLE_STATUS = frozenset({408, 409, 425, 429, 500, 502, 503, 504, 529})
+
+
+@contextmanager
+def _run_scope(execution: RunExecutionContext):
+    execution_token = _ACTIVE_EXECUTION.set(execution)
+    usage_token = _ACTIVE_USAGE.set(execution.usage)
+    try:
+        yield
+    finally:
+        _ACTIVE_USAGE.reset(usage_token)
+        _ACTIVE_EXECUTION.reset(execution_token)
 
 def _schema_instruction(schema: type[BaseModel]) -> str:
     """Render the authoritative structured-output contract for a model call.
@@ -73,23 +96,33 @@ class UsageTracker:
         *,
         prompt_tokens: int = 0,
         completion_tokens: int = 0,
+        attempted_tokens: int = 0,
         seconds: float = 0.0,
-        exact: bool = False,
+        exact: bool | None = None,
         retries: int = 0,
         failures: int = 0,
         calls: int = 1,
+        logical_calls: int = 0,
+        attempts: int = 0,
     ) -> None:
         with self._lock:
             current = self._roles.get(role, RoleUsage())
+            recorded_exact = current.exact
+            if calls:
+                recorded_exact = (current.exact or current.calls == 0) and bool(exact)
             self._roles[role] = RoleUsage(
                 calls=current.calls + calls,
+                logical_calls=current.logical_calls + logical_calls,
+                attempts=current.attempts + attempts,
                 retries=current.retries + retries,
                 failures=current.failures + failures,
                 prompt_tokens=current.prompt_tokens + prompt_tokens,
                 completion_tokens=current.completion_tokens + completion_tokens,
+                attempted_tokens=current.attempted_tokens + attempted_tokens,
                 seconds=round(current.seconds + seconds, 3),
-                # Exact only if every recorded call was exact.
-                exact=(current.exact or current.calls == 0) and exact,
+                # Exact only if every provider call was exact. Logical-call
+                # records do not change token exactness.
+                exact=recorded_exact,
             )
 
     def snapshot(self) -> RunUsage:
@@ -98,10 +131,13 @@ class UsageTracker:
         total = RunUsage(by_role=roles)
         for usage in roles.values():
             total.calls += usage.calls
+            total.logical_calls += usage.logical_calls
+            total.attempts += usage.attempts
             total.retries += usage.retries
             total.failures += usage.failures
             total.prompt_tokens += usage.prompt_tokens
             total.completion_tokens += usage.completion_tokens
+            total.attempted_tokens += usage.attempted_tokens
             total.seconds = round(total.seconds + usage.seconds, 3)
         total.total_tokens = total.prompt_tokens + total.completion_tokens
         total.exact = bool(roles) and all(usage.exact for usage in roles.values())
@@ -136,34 +172,120 @@ class MinerModel:
         """Release the underlying HTTP connection pool."""
         self._http.close()
 
-    def chat(self, role: str, system: str, prompt: str) -> str:
+    def chat(
+        self,
+        role: str,
+        system: str,
+        prompt: str,
+        *,
+        usage: UsageTracker | None = None,
+        execution: RunExecutionContext | None = None,
+    ) -> str:
         """Plain-text completion for one role (used for KB digests)."""
+        execution = execution or _ACTIVE_EXECUTION.get()
         route = self.config.resolve(role, dry_run=self.dry_run)
+        tracker = usage or (execution.usage if execution is not None else _ACTIVE_USAGE.get()) or self.usage
+        if execution is not None:
+            execution.begin_logical_call()
+        tracker.record(role, logical_calls=1, calls=0)
         if route.provider == "mock":
-            result = mock.digest(prompt)
-            self.usage.record(
+            prompt_tokens = estimate_tokens(system) + estimate_tokens(prompt)
+            admission = None
+            if execution is not None:
+                admission = execution.admit_attempt(prompt_tokens, route.max_tokens)
+            started = time.monotonic()
+            try:
+                result = mock.digest(prompt)
+            except Exception:
+                if execution is not None and admission is not None:
+                    execution.abandon_attempt(admission)
+                tracker.record(
+                    role,
+                    attempted_tokens=prompt_tokens,
+                    attempts=1,
+                    failures=1,
+                    calls=0,
+                )
+                raise
+            tracker.record(
                 role,
-                prompt_tokens=estimate_tokens(prompt),
+                prompt_tokens=prompt_tokens,
                 completion_tokens=estimate_tokens(result),
+                seconds=time.monotonic() - started,
+                attempts=1,
             )
+            if execution is not None:
+                execution.record_tokens(prompt_tokens, estimate_tokens(result), admission)
+                execution.remaining_seconds()
             return result
-        return self._chat_http(role, route, system, prompt)
+        result = self._chat_http(
+            role, route, system, prompt, usage=tracker, execution=execution
+        )
+        return result
 
-    def call_json(self, role: str, system: str, prompt: str, schema: type[T]) -> T:
+    def call_json(
+        self,
+        role: str,
+        system: str,
+        prompt: str,
+        schema: type[T],
+        *,
+        usage: UsageTracker | None = None,
+        execution: RunExecutionContext | None = None,
+    ) -> T:
         """Request JSON, validate with pydantic, retry with the error fed back.
 
         Up to ``MAX_JSON_ATTEMPTS`` attempts; each failure appends the validation
         or parse error to the prompt so the model can self-correct.
         """
+        execution = execution or _ACTIVE_EXECUTION.get()
         route = self.config.resolve(role, dry_run=self.dry_run)
+        tracker = usage or (execution.usage if execution is not None else _ACTIVE_USAGE.get()) or self.usage
+        if execution is not None:
+            execution.begin_logical_call()
+        tracker.record(role, logical_calls=1, calls=0)
         full_prompt = prompt + _schema_instruction(schema)
         last_error = ""
         for attempt in range(1, MAX_JSON_ATTEMPTS + 1):
             if route.provider == "mock":
-                raw: dict[str, Any] = mock.call_json(role, schema.__name__, prompt)
-                self.usage.record(role, prompt_tokens=estimate_tokens(prompt))
+                prompt_tokens = estimate_tokens(system) + estimate_tokens(full_prompt + last_error)
+                admission = None
+                if execution is not None:
+                    admission = execution.admit_attempt(prompt_tokens, route.max_tokens)
+                started = time.monotonic()
+                try:
+                    raw: dict[str, Any] = mock.call_json(role, schema.__name__, prompt)
+                except Exception:
+                    if execution is not None and admission is not None:
+                        execution.abandon_attempt(admission)
+                    tracker.record(
+                        role,
+                        attempted_tokens=prompt_tokens,
+                        attempts=1,
+                        failures=1,
+                        calls=0,
+                    )
+                    raise
+                completion_tokens = estimate_tokens(json.dumps(raw, ensure_ascii=False))
+                tracker.record(
+                    role,
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=completion_tokens,
+                    seconds=time.monotonic() - started,
+                    attempts=1,
+                )
+                if execution is not None:
+                    execution.record_tokens(prompt_tokens, completion_tokens, admission)
+                    execution.remaining_seconds()
             else:
-                text = self._chat_http(role, route, system, full_prompt + last_error)
+                text = self._chat_http(
+                    role,
+                    route,
+                    system,
+                    full_prompt + last_error,
+                    usage=tracker,
+                    execution=execution,
+                )
                 try:
                     raw = _extract_json(text)
                 except ValueError as exc:
@@ -178,7 +300,8 @@ class MinerModel:
                     )
                     continue
             try:
-                return schema.model_validate(raw)
+                result = schema.model_validate(raw)
+                return result
             except ValidationError as exc:
                 if attempt == MAX_JSON_ATTEMPTS:
                     raise RuntimeError(
@@ -193,7 +316,16 @@ class MinerModel:
 
     # -- HTTP ---------------------------------------------------------------
 
-    def _chat_http(self, role: str, route: RoleRoute, system: str, prompt: str) -> str:
+    def _chat_http(
+        self,
+        role: str,
+        route: RoleRoute,
+        system: str,
+        prompt: str,
+        *,
+        usage: UsageTracker | None = None,
+        execution: RunExecutionContext | None = None,
+    ) -> str:
         api_key = os.environ.get(route.api_key_env, "")
         if not api_key:
             raise RuntimeError(
@@ -214,12 +346,20 @@ class MinerModel:
             body["response_format"] = {"type": "json_object"}
 
         policy = self.config.retry
+        tracker = usage or (execution.usage if execution is not None else self.usage)
         started = time.monotonic()
         retries = 0
         last_error: Exception | None = None
 
         for attempt in range(1, policy.attempts + 1):
+            admission = None
             try:
+                prompt_tokens_estimate = estimate_tokens(system) + estimate_tokens(prompt)
+                if execution is not None:
+                    admission = execution.admit_attempt(prompt_tokens_estimate, route.max_tokens)
+                    timeout = execution.remaining_seconds()
+                else:
+                    timeout = 180.0
                 response = self._http.post(
                     f"{route.base_url.rstrip('/')}/chat/completions",
                     headers={
@@ -227,38 +367,87 @@ class MinerModel:
                         "Content-Type": "application/json",
                     },
                     json=body,
+                    timeout=timeout,
                 )
                 response.raise_for_status()
             except httpx.HTTPStatusError as exc:
+                if execution is not None and admission is not None:
+                    execution.abandon_attempt(admission)
                 last_error = exc
                 status = exc.response.status_code
                 if status not in RETRYABLE_STATUS or attempt == policy.attempts:
-                    self.usage.record(
-                        role, seconds=time.monotonic() - started, retries=retries, failures=1
+                    tracker.record(
+                        role,
+                        attempted_tokens=prompt_tokens_estimate,
+                        seconds=time.monotonic() - started,
+                        retries=0,
+                        failures=1,
+                        attempts=1,
+                        calls=0,
                     )
                     raise RuntimeError(
                         f"Chat completion failed for provider {route.provider!r} "
                         f"(HTTP {status}): {_error_detail(exc.response)}"
                     ) from exc
-                self._sleep(_retry_delay(policy, attempt, exc.response))
+                delay = _retry_delay(policy, attempt, exc.response)
+                tracker.record(
+                    role,
+                    attempted_tokens=prompt_tokens_estimate,
+                    retries=1,
+                    attempts=1,
+                    calls=0,
+                )
+                if execution is not None:
+                    delay = min(delay, execution.remaining_seconds())
+                self._sleep(delay)
                 retries += 1
                 continue
             except httpx.HTTPError as exc:
+                if execution is not None and admission is not None:
+                    execution.abandon_attempt(admission)
                 last_error = exc
                 if attempt == policy.attempts:
-                    self.usage.record(
-                        role, seconds=time.monotonic() - started, retries=retries, failures=1
+                    tracker.record(
+                        role,
+                        attempted_tokens=prompt_tokens_estimate,
+                        seconds=time.monotonic() - started,
+                        retries=0,
+                        failures=1,
+                        attempts=1,
+                        calls=0,
                     )
                     raise RuntimeError(
                         f"Chat completion failed for provider {route.provider!r} "
                         f"after {policy.attempts} attempts: {exc}"
                     ) from exc
-                self._sleep(_retry_delay(policy, attempt, None))
+                delay = _retry_delay(policy, attempt, None)
+                tracker.record(
+                    role,
+                    attempted_tokens=prompt_tokens_estimate,
+                    retries=1,
+                    attempts=1,
+                    calls=0,
+                )
+                if execution is not None:
+                    delay = min(delay, execution.remaining_seconds())
+                self._sleep(delay)
                 retries += 1
                 continue
+            except Exception:
+                if admission is not None:
+                    if execution is not None:
+                        execution.abandon_attempt(admission)
+                    tracker.record(
+                        role,
+                        attempted_tokens=prompt_tokens_estimate,
+                        attempts=1,
+                        failures=1,
+                        calls=0,
+                    )
+                raise
 
             try:
-                content, usage = _parse_completion(response, route.provider)
+                content, provider_usage = _parse_completion(response, route.provider)
             except RuntimeError as exc:
                 # A provider can return HTTP 200 before an upstream generation
                 # fails, yielding no choices, empty content, or a malformed
@@ -266,37 +455,94 @@ class MinerModel:
                 # 5xx and are safe to retry because model calls have no side
                 # effects.
                 last_error = exc
+                if execution is not None and admission is not None:
+                    execution.record_tokens(
+                        admission.prompt_tokens, route.max_tokens, admission
+                    )
                 if attempt == policy.attempts:
-                    self.usage.record(
+                    tracker.record(
                         role,
+                        attempted_tokens=prompt_tokens_estimate + route.max_tokens,
                         seconds=time.monotonic() - started,
-                        retries=retries,
+                        retries=0,
                         failures=1,
+                        attempts=1,
+                        calls=0,
                     )
                     raise RuntimeError(
                         f"Completion failed for role {role!r} using "
                         f"{route.provider!r}/{route.model!r} after "
                         f"{policy.attempts} attempts: {exc}"
                     ) from exc
-                self._sleep(_retry_delay(policy, attempt, None))
+                delay = _retry_delay(policy, attempt, None)
+                tracker.record(
+                    role,
+                    attempted_tokens=prompt_tokens_estimate + route.max_tokens,
+                    retries=1,
+                    attempts=1,
+                    calls=0,
+                )
+                if execution is not None:
+                    delay = min(delay, execution.remaining_seconds())
+                self._sleep(delay)
                 retries += 1
                 continue
-            prompt_tokens = usage.get("prompt_tokens")
-            completion_tokens = usage.get("completion_tokens")
+            prompt_tokens = provider_usage.get("prompt_tokens")
+            completion_tokens = provider_usage.get("completion_tokens")
             exact = prompt_tokens is not None and completion_tokens is not None
-            self.usage.record(
+            observed_prompt_tokens = (
+                int(prompt_tokens) if prompt_tokens is not None else prompt_tokens_estimate
+            )
+            observed_completion_tokens = (
+                int(completion_tokens)
+                if completion_tokens is not None
+                else estimate_tokens(content)
+            )
+            tracker.record(
                 role,
-                prompt_tokens=int(prompt_tokens or estimate_tokens(system) + estimate_tokens(prompt)),
-                completion_tokens=int(completion_tokens or estimate_tokens(content)),
+                prompt_tokens=observed_prompt_tokens,
+                completion_tokens=observed_completion_tokens,
                 seconds=time.monotonic() - started,
                 exact=exact,
-                retries=retries,
+                attempts=1,
             )
+            if execution is not None:
+                execution.record_tokens(
+                    observed_prompt_tokens,
+                    observed_completion_tokens,
+                    admission,
+                )
+                execution.remaining_seconds()
             return content
 
         raise RuntimeError(
             f"Chat completion failed for provider {route.provider!r}: {last_error}"
         )
+
+
+class RunScopedModel:
+    """A model facade whose usage and admission state belong to one run."""
+
+    def __init__(self, base: MinerModel, execution: RunExecutionContext) -> None:
+        self._base = base
+        self.execution = execution
+        self.config = base.config
+        self.dry_run = base.dry_run
+        self.usage = execution.usage
+
+    def routing_table(self) -> dict[str, str]:
+        return self._base.routing_table()
+
+    def chat(self, role: str, system: str, prompt: str) -> str:
+        with _run_scope(self.execution):
+            return self._base.chat(role, system, prompt)
+
+    def call_json(self, role: str, system: str, prompt: str, schema: type[T]) -> T:
+        with _run_scope(self.execution):
+            return self._base.call_json(role, system, prompt, schema)
+
+    def close(self) -> None:
+        """The base model is owned by the outer run and closes it."""
 
 
 def _retry_delay(policy: Any, attempt: int, response: httpx.Response | None) -> float:

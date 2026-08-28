@@ -101,6 +101,9 @@ def test_full_run_dry(workspace: Path) -> None:
 
     # Manifest
     manifest = read_json(run_dir / "run.json")
+    assert manifest["status"] == "completed"
+    assert manifest["budget"]["max_attempts"] == 70
+    assert manifest["usage"]["attempts"] > 0
     assert manifest["dry_run"] is True
     assert manifest["max_iterations"] == 2
     assert manifest["input_quality"]["level"] == "thin"
@@ -348,8 +351,115 @@ def test_stage_failure_writes_error_json(workspace: Path, monkeypatch) -> None:
     run_dirs = list((workspace / "runs").iterdir())
     error = read_json(run_dirs[0] / "error.json")
     assert error["stage"] == "layer_analysis"
+    assert error["status"] == "failed"
     assert "simulated provider outage" in error["error"]
     assert "context.json" in error["artifacts_written"]
+    assert read_json(run_dirs[0] / "run.json")["status"] == "failed"
+
+
+def test_run_manifest_exists_during_input_preflight(workspace: Path) -> None:
+    observed: list[str] = []
+
+    def preflight(_quality) -> None:  # type: ignore[no-untyped-def]
+        run_manifests = list((workspace / "runs").glob("*/run.json"))
+        assert len(run_manifests) == 1
+        observed.append(read_json(run_manifests[0])["status"])
+
+    run_mine(
+        workspace_path=workspace,
+        idea="Preflight ownership",
+        dry_run=True,
+        preflight_callback=preflight,
+    )
+
+    assert observed == ["running"]
+
+
+def test_budget_exhaustion_is_terminal_and_attributed(workspace: Path) -> None:
+    from automation_miner.execution import BudgetExceeded
+    from automation_miner.models.client import MinerModel
+    from automation_miner.models.config import load_config
+
+    config = load_config(None)
+    config.budget = {"max_attempts": 1, "max_tokens": 100_000, "max_seconds": 30}
+    model = MinerModel(config, dry_run=True)
+    try:
+        with pytest.raises(BudgetExceeded, match="max_attempts"):
+            run_mine(
+                workspace_path=workspace,
+                idea="Budget limited domain",
+                dry_run=True,
+                model=model,
+            )
+    finally:
+        model.close()
+
+    run_dir = next((workspace / "runs").iterdir())
+    error = read_json(run_dir / "error.json")
+    manifest = read_json(run_dir / "run.json")
+    assert error["status"] == "budget_exhausted"
+    assert error["budget_limit"] == "max_attempts"
+    assert manifest["status"] == "budget_exhausted"
+    assert manifest["usage"]["attempts"] == 1
+
+
+def test_setup_failure_still_has_a_terminal_run_manifest(workspace: Path) -> None:
+    from automation_miner.models.client import MinerModel
+    from automation_miner.models.config import load_config
+
+    config = load_config(None)
+    config.roles["mapper"] = {"provider": "missing-provider", "model": "model"}
+    model = MinerModel(config, dry_run=False)
+    try:
+        with pytest.raises(ValueError, match="not defined"):
+            run_mine(
+                workspace_path=workspace,
+                idea="Invalid provider setup",
+                model=model,
+            )
+    finally:
+        model.close()
+
+    run_dir = next((workspace / "runs").iterdir())
+    assert read_json(run_dir / "run.json")["status"] == "failed"
+    assert read_json(run_dir / "error.json")["stage"] == "input_assessment"
+
+
+def test_invalid_budget_is_recorded_after_run_allocation(workspace: Path) -> None:
+    from automation_miner.models.client import MinerModel
+    from automation_miner.models.config import load_config
+
+    config = load_config(None)
+    config.budget = {"max_attempts": "invalid", "max_tokens": 100, "max_seconds": 30}
+    model = MinerModel(config, dry_run=True)
+    try:
+        with pytest.raises(Exception, match="max_attempts"):
+            run_mine(workspace_path=workspace, idea="Invalid budget", model=model)
+    finally:
+        model.close()
+
+    run_dir = next((workspace / "runs").iterdir())
+    assert read_json(run_dir / "run.json")["status"] == "failed"
+    assert read_json(run_dir / "error.json")["error_type"] == "ValidationError"
+
+
+def test_post_publish_failure_marks_partial_artifacts_failed(workspace: Path, monkeypatch) -> None:
+    import automation_miner.graph.build as build_module
+
+    def fail_reindex(_root: Path) -> None:
+        raise RuntimeError("simulated registry outage")
+
+    monkeypatch.setattr(build_module, "reindex", fail_reindex)
+    with pytest.raises(RuntimeError, match="simulated registry outage"):
+        run_mine(workspace_path=workspace, idea="Partial publication", dry_run=True)
+
+    run_dir = next((workspace / "runs").iterdir())
+    assert read_json(run_dir / "run.json")["status"] == "failed"
+    assert read_json(run_dir / "summary.json")["status"] == "failed"
+    assert "> **Status:** failed  " in (run_dir / "report.md").read_text(encoding="utf-8")
+    assert not list((workspace / "opps").rglob("AM-*.md"))
+    error = read_json(run_dir / "error.json")
+    assert len(error["quarantined_artifacts"]) == 5
 
 
 def test_opportunities_json_filters(workspace: Path) -> None:

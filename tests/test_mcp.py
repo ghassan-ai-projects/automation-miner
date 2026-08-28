@@ -27,6 +27,8 @@ def test_all_tools_have_schemas() -> None:
         "query_registry",
         "get_run_report",
         "get_run_summary",
+        "get_run_manifest",
+        "get_run_error",
         "list_readers",
         "reindex",
         "server_info",
@@ -84,6 +86,42 @@ def test_get_run_summary_rejects_traversal(workspace: Path) -> None:
     resp = dispatch("get_run_summary", {"run_id": "../../etc"}, workspace)
     assert not resp.success
     assert resp.error.code.value == "validation_error"
+
+
+def test_get_run_manifest_and_error_are_directly_addressable(workspace: Path) -> None:
+    data = _mine(workspace)
+    manifest = dispatch("get_run_manifest", {"run_id": data["run_id"]}, workspace)
+    assert manifest.success
+    assert manifest.data["manifest"]["status"] == "completed"
+
+    error = dispatch("get_run_error", {"run_id": data["run_id"]}, workspace)
+    assert not error.success
+    assert error.error.code == "not_found"
+
+
+def test_failed_mine_returns_run_artifact_coordinates(workspace: Path, monkeypatch) -> None:
+    from automation_miner.models.client import MinerModel
+
+    original = MinerModel.call_json
+
+    def fail(self, role, system, prompt, schema):  # type: ignore[no-untyped-def]
+        if role == "mapper":
+            raise RuntimeError("provider unavailable")
+        return original(self, role, system, prompt, schema)
+
+    monkeypatch.setattr(MinerModel, "call_json", fail)
+    response = dispatch(
+        "mine_domain",
+        {"input": "MCP failing domain", "dry_run": True},
+        workspace,
+    )
+
+    assert not response.success
+    assert response.error.code == "internal_error"
+    run_id = response.error.details["run_id"]
+    error = dispatch("get_run_error", {"run_id": run_id}, workspace)
+    assert error.success
+    assert error.data["error"]["error"] == "provider unavailable"
 
 
 def test_list_readers(workspace: Path) -> None:

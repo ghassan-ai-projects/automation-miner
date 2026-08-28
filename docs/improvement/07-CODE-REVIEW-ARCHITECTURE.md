@@ -33,3 +33,24 @@
 The prompt fence is a mitigation, not an isolation boundary. Provider-side
 retention, sensitive-data handling, and semantic grounding remain external or
 human-evaluation evidence gaps documented in the live-provider plan.
+
+## Phase 3 review loop
+
+**Scope:** Execution ownership, cross-process AM-ID allocation, failure
+visibility, registry/API publication safety, and operational maintenance.
+
+The Phase 3 architecture reviews found and required fixes for mixed legacy/new
+allocator coordination, partial publication, missing failure access through the
+MCP surface, provider-attempt token caps, usage ownership, malformed manifests,
+and fail-open visibility of incomplete generated briefs. The implementation
+now uses SQLite `BEGIN IMMEDIATE` with a migration lock, writes a pending
+manifest before promotion, exposes manifest/error retrieval, owns usage in a
+per-run execution context, and requires a completed source manifest plus
+opportunity membership before registry or direct lookup visibility. Malformed
+source manifests are fail-closed and covered by `tests/test_registry.py`.
+
+The latest bounded re-review was reissued after the preceding reviewer context
+timed out. It had not returned a verdict at the time of this record; that
+orchestration gap is not counted as approval. Phase 3 remains eligible for
+commit only after the final independent verdict is recorded or the same review
+is independently completed by another reviewer pair.

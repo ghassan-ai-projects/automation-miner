@@ -176,6 +176,14 @@ class InputQuality(ArtifactModel):
     warning: str = ""
 
 
+class RunBudget(ArtifactModel):
+    """Hard per-invocation admission limits."""
+
+    max_attempts: int = Field(default=70, ge=1)
+    max_tokens: int = Field(default=120_000, ge=1)
+    max_seconds: float = Field(default=1_800.0, gt=0)
+
+
 class ContextPacket(ArtifactModel):
     """Normalized, budget-bounded input for the pipeline.
 
@@ -500,10 +508,13 @@ class RoleUsage(ArtifactModel):
     """Per-role call and token accounting."""
 
     calls: int = 0
+    logical_calls: int = 0
+    attempts: int = 0
     retries: int = 0
     failures: int = 0
     prompt_tokens: int = 0
     completion_tokens: int = 0
+    attempted_tokens: int = 0
     seconds: float = 0.0
     exact: bool = False
 
@@ -516,11 +527,14 @@ class RunUsage(ArtifactModel):
     """Whole-run totals. Token counts are exact when the provider reports them."""
 
     calls: int = 0
+    logical_calls: int = 0
+    attempts: int = 0
     retries: int = 0
     failures: int = 0
     prompt_tokens: int = 0
     completion_tokens: int = 0
     total_tokens: int = 0
+    attempted_tokens: int = 0
     seconds: float = 0.0
     exact: bool = False
     by_role: dict[str, RoleUsage] = Field(default_factory=dict)
@@ -559,6 +573,9 @@ class RunSummary(ArtifactModel):
     raw_constraints: str = ""
     constraint_params: dict[str, str] = Field(default_factory=dict)
     created: str = ""
+    status: Literal["running", "completed", "failed", "budget_exhausted"] = "completed"
+    publication_status: Literal["pending", "complete"] = "complete"
+    budget: RunBudget = Field(default_factory=RunBudget)
     duration_seconds: float = 0.0
     dry_run: bool = False
     stats: PortfolioStats = Field(default_factory=PortfolioStats)
@@ -582,6 +599,10 @@ class RunManifest(ArtifactModel):
     source_kind: Literal["idea", "file", "kb"]
     source_value: str = Field(min_length=1)
     analysis_mode: Literal["operational", "strategy"]
+    requested_mode: Literal["auto", "operational", "strategy"] = "auto"
+    status: Literal["running", "completed", "failed", "budget_exhausted"] = "running"
+    publication_status: Literal["pending", "complete"] = "pending"
+    budget: RunBudget = Field(default_factory=RunBudget)
     created: str
     finished: str = ""
     duration_seconds: float = Field(default=0.0, ge=0)
@@ -608,4 +629,12 @@ class StageFailure(ArtifactModel):
     error_type: str
     error: str
     created: str
+    status: Literal["failed", "budget_exhausted"] = "failed"
+    budget: RunBudget = Field(default_factory=RunBudget)
+    budget_limit: str = ""
+    observed_attempts: int = 0
+    observed_tokens: int = 0
+    stage_seconds: dict[str, float] = Field(default_factory=dict)
+    usage: RunUsage = Field(default_factory=RunUsage)
     artifacts_written: list[str] = Field(default_factory=list)
+    quarantined_artifacts: list[str] = Field(default_factory=list)
