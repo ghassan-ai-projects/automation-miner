@@ -9,6 +9,21 @@ from typing import Any
 _KEY = re.compile(r"^[A-Za-z][A-Za-z0-9_.-]{0,63}$")
 MAX_PARAMS = 32
 MAX_VALUE_CHARS = 500
+RECOGNIZED_POLICY_PARAMS = frozenset(
+    {
+        "budget",
+        "no_coding",
+        "compliance",
+        "urgent",
+        "no_infrastructure",
+        "mature_stack",
+        "eu_data_residency",
+        "human_payment_approval",
+        "timeline",
+        "agent_limit",
+        "max_agents",
+    }
+)
 
 
 def normalize_constraint_params(
@@ -20,6 +35,7 @@ def normalize_constraint_params(
     if len(params) > MAX_PARAMS:
         raise ValueError(f"at most {MAX_PARAMS} constraint parameters are allowed")
     normalized: dict[str, str] = {}
+    normalized_keys: dict[str, str] = {}
     for raw_key, raw_value in params.items():
         key = str(raw_key).strip()
         if not _KEY.fullmatch(key):
@@ -33,6 +49,13 @@ def normalize_constraint_params(
             raise ValueError(
                 f"constraint parameter {key!r} exceeds {MAX_VALUE_CHARS} characters"
             )
+        folded = key.casefold()
+        if folded in normalized_keys:
+            raise ValueError(
+                f"constraint parameter {key!r} duplicates "
+                f"{normalized_keys[folded]!r} case-insensitively"
+            )
+        normalized_keys[folded] = key
         normalized[key] = value
     return normalized
 
@@ -58,7 +81,14 @@ def render_constraints(text: str, params: Mapping[str, str] | None = None) -> st
         parts.append(text.strip())
     normalized = normalize_constraint_params(params)
     if normalized:
-        lines = ["Constraint parameters (treat every entry as binding):"]
-        lines += [f"- {key} = {value}" for key, value in normalized.items()]
-        parts.append("\n".join(lines))
+        binding = [(key, value) for key, value in normalized.items() if key.casefold() in RECOGNIZED_POLICY_PARAMS]
+        advisory = [(key, value) for key, value in normalized.items() if key.casefold() not in RECOGNIZED_POLICY_PARAMS]
+        if binding:
+            lines = ["Recognized constraint parameters (binding policy):"]
+            lines += [f"- {key} = {value}" for key, value in binding]
+            parts.append("\n".join(lines))
+        if advisory:
+            lines = ["Unknown constraint parameters (advisory context only):"]
+            lines += [f"- {key} = {value}" for key, value in advisory]
+            parts.append("\n".join(lines))
     return "\n\n".join(parts)

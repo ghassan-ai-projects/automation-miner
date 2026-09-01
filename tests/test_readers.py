@@ -89,6 +89,25 @@ def test_pdf_quality_override_is_explicit(tmp_path: Path) -> None:
     assert document.meta["extraction_quality"] < 0.9
 
 
+def test_pdf_records_empty_pages_as_failed_telemetry(monkeypatch) -> None:
+    pypdf = pytest.importorskip("pypdf")
+
+    class Page:
+        def extract_text(self) -> str:
+            return ""
+
+    class Document:
+        pages = [Page(), Page()]
+        is_encrypted = False
+
+    monkeypatch.setattr(pypdf, "PdfReader", lambda _: Document())
+    with pytest.raises(ReaderError) as raised:
+        PdfReader().parse(Path("scanned.pdf"), b"pdf")
+
+    assert raised.value.meta["pages_failed"] == 2
+    assert "p.1: no extractable text" in raised.value.meta["page_errors"]
+
+
 # ---------------------------------------------------------------------------
 # Encoding
 # ---------------------------------------------------------------------------
@@ -316,6 +335,17 @@ def test_pdf_pages_become_locators(tmp_path: Path) -> None:
     assert document.meta["pages"] == 2
     assert [s.locator for s in document.segments] == ["p.1", "p.2"]
     assert "Audit trail" in document.text()
+
+
+def test_pdf_page_extraction_errors_are_retained_in_metadata() -> None:
+    reader = PdfReader()
+    reader._pages = 3
+    reader._page_errors = ["p.2: ValueError: broken character map"]
+
+    meta = reader.meta(Path("broken.pdf"), b"", [])
+
+    assert meta["pages_failed"] == 1
+    assert "p.2" in meta["page_errors"]
 
 
 def test_scanned_pdf_reports_ocr_requirement(tmp_path: Path) -> None:

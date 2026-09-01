@@ -71,6 +71,11 @@ max_seconds = 12
 
 [concurrency]
 critique = 8
+
+[budget]
+max_attempts = 22
+max_tokens = 33000
+max_seconds = 44
 """,
         encoding="utf-8",
     )
@@ -82,6 +87,11 @@ critique = 8
     assert config.retry.max_seconds == 12.0
     assert config.workers_for("critique") == 8
     assert config.workers_for("score") == 4  # default retained
+    assert config.budget == {
+        "max_attempts": 22,
+        "max_tokens": 33_000,
+        "max_seconds": 44,
+    }
 
 
 def test_workers_for_rejects_nonsense() -> None:

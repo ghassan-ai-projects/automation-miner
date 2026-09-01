@@ -83,6 +83,15 @@ class SourceDocument(ArtifactModel):
 class ReaderError(Exception):
     """A reader could not extract this file. Caught per-file, never fatal."""
 
+    def __init__(
+        self,
+        message: str,
+        *,
+        meta: dict[str, str | int | float | bool] | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.meta = meta or {}
+
 
 @dataclass(frozen=True)
 class Availability:
@@ -178,6 +187,8 @@ class BaseReader:
         """Read an int option supplied via ``[readers.<name>]`` in miner.toml."""
         value = self.options.get(key, default)
         try:
-            return int(value)  # type: ignore[arg-type]
+            if isinstance(value, bool):
+                return default
+            return int(value) if isinstance(value, (int, float, str)) else default
         except (TypeError, ValueError):
             return default

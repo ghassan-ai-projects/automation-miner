@@ -6,6 +6,7 @@ of a regex parser), and builds the compact cross-indexed registry.
 
 from __future__ import annotations
 
+import json
 import re
 from datetime import datetime
 from pathlib import Path
@@ -21,6 +22,7 @@ STATUSES = tuple(status.value for status in OppStatus)
 STATUS_ALIASES = {"validating": OppStatus.EVALUATING.value, "building": OppStatus.IMPLEMENTING.value}
 _BRIEF_ID_RE = re.compile(r"^(AM-\d+)-")
 _AM_ID_RE = re.compile(r"AM-\d+")
+_RUN_ID_RE = re.compile(r"\d{4}-\d{2}-\d{2}_[a-z0-9]+(?:-[a-z0-9]+)*")
 
 
 def parse_frontmatter(text: str) -> dict[str, Any]:
@@ -64,6 +66,49 @@ def build_registry(base: Path) -> dict[str, Any]:
                 if not _AM_ID_RE.fullmatch(am_id) or am_id != filename_id:
                     warnings.append(
                         {"file": str(f), "reason": "frontmatter am-id is missing or mismatched"}
+                    )
+                    continue
+                source_value = meta.get("source")
+                if not isinstance(source_value, str) or not _RUN_ID_RE.fullmatch(source_value):
+                    warnings.append({"file": str(f), "reason": "missing or invalid source run"})
+                    continue
+                source_run = source_value
+                manifest_path = base / "runs" / source_run / "run.json"
+                try:
+                    run_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                except (OSError, ValueError):
+                    run_manifest = None
+                run_status = (
+                    run_manifest.get("status") if isinstance(run_manifest, dict) else None
+                )
+                publication_status = (
+                    run_manifest.get("publication_status")
+                    if isinstance(run_manifest, dict)
+                    else None
+                )
+                opportunities = (
+                    run_manifest.get("opportunities", [])
+                    if isinstance(run_manifest, dict)
+                    else []
+                )
+                if (
+                    run_status != "completed"
+                    or publication_status != "complete"
+                    or not isinstance(opportunities, list)
+                    or am_id not in opportunities
+                ):
+                    warnings.append(
+                        {
+                            "file": str(f),
+                            "reason": (
+                                f"source run {source_run} is {run_status or 'unreadable'}"
+                                + (
+                                    f" / publication {publication_status or 'unreadable'}"
+                                    if run_status == "completed"
+                                    else ""
+                                )
+                            ),
+                        }
                     )
                     continue
                 if am_id in seen_ids:
@@ -154,6 +199,17 @@ def build_registry(base: Path) -> dict[str, Any]:
 
 def reindex(base: Path) -> dict[str, Any]:
     """Build the registry and write registry.json."""
+    from automation_miner.artifacts.workspace import workspace_transaction_lock
+
+    from automation_miner.artifacts.publication import recover_publications
+
+    with workspace_transaction_lock(base):
+        recover_publications(base)
+        return reindex_locked(base)
+
+
+def reindex_locked(base: Path) -> dict[str, Any]:
+    """Build and persist the registry while the caller owns the workspace lock."""
     from automation_miner.artifacts.workspace import write_json
 
     registry = build_registry(base)

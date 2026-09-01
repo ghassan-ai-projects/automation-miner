@@ -66,6 +66,11 @@ def test_full_run_dry(workspace: Path) -> None:
     assert "## Problem Statement" in text
     assert "## Risk & Mitigations" in text
     assert "## Self-Improvement" in text
+    assert "## Validate First" in text
+    summary = read_json(run_dir / "summary.json")
+    assert summary["input_quality"]["level"] == "thin"
+    assert summary["retained_quality"]["level"] == "thin"
+    assert all(entry["artifact_type"] == "discovery_hypothesis" for entry in summary["opportunities"])
 
     # Report + run log rendered
     report = (run_dir / "report.md").read_text(encoding="utf-8")
@@ -96,8 +101,13 @@ def test_full_run_dry(workspace: Path) -> None:
 
     # Manifest
     manifest = read_json(run_dir / "run.json")
+    assert manifest["status"] == "completed"
+    assert manifest["budget"]["max_attempts"] == 70
+    assert manifest["usage"]["attempts"] > 0
     assert manifest["dry_run"] is True
     assert manifest["max_iterations"] == 2
+    assert manifest["input_quality"]["level"] == "thin"
+    assert manifest["retained_quality"]["level"] == "thin"
     assert manifest["source_value"] == "German healthcare back office"
     assert manifest["config_source"] == "defaults"
     assert manifest["prompt_version"]
@@ -157,6 +167,44 @@ def test_dynamic_constraint_params_are_persisted_and_reach_prompts(
     assert "- agent = openclaw" in planner
     assert len(candidate_prompts) == 5
     assert all("- deployment = local-only" in prompt for prompt in candidate_prompts)
+
+
+def test_unknown_constraint_values_do_not_activate_policy(workspace: Path) -> None:
+    result = run_mine(
+        workspace_path=workspace,
+        idea="Unknown deployment policy",
+        constraint_params={"deployment": "budget:low"},
+        dry_run=True,
+    )
+
+    assert all(
+        not any("budget low/zero" in note for note in opportunity["overrides_applied"])
+        for opportunity in result["opportunities"]
+    )
+
+
+def test_unresolved_draft_reference_blocks_publication_end_to_end(
+    workspace: Path, monkeypatch
+) -> None:
+    from automation_miner.models import mock
+
+    original = mock.call_json
+
+    def inject_unresolved_ref(role: str, schema_name: str, prompt: str):
+        payload = original(role, schema_name, prompt)
+        if schema_name == "OpportunityDraft":
+            payload["evidence_refs"] = ["S99"]
+        return payload
+
+    monkeypatch.setattr(mock, "call_json", inject_unresolved_ref)
+    result = run_mine(workspace_path=workspace, idea="Unresolved reference", dry_run=True)
+
+    assert all(opportunity["eligibility"] == "filtered" for opportunity in result["opportunities"])
+    assert all(
+        any("grounding: cited evidence ids do not resolve: S99" in reason for reason in opportunity["exclusion_reasons"])
+        for opportunity in result["opportunities"]
+    )
+    assert not list((workspace / "opps").rglob("AM-*.md"))
 
 
 def test_portfolio_planner_and_drafters_share_all_candidate_ideas(
@@ -303,8 +351,176 @@ def test_stage_failure_writes_error_json(workspace: Path, monkeypatch) -> None:
     run_dirs = list((workspace / "runs").iterdir())
     error = read_json(run_dirs[0] / "error.json")
     assert error["stage"] == "layer_analysis"
+    assert error["status"] == "failed"
     assert "simulated provider outage" in error["error"]
     assert "context.json" in error["artifacts_written"]
+    assert read_json(run_dirs[0] / "run.json")["status"] == "failed"
+    assert read_json(run_dirs[0] / "summary.json")["status"] == "failed"
+    assert "> **Status:** failed  " in (run_dirs[0] / "report.md").read_text(encoding="utf-8")
+
+
+def test_failure_recording_logs_when_error_artifact_cannot_be_written(
+    workspace: Path, monkeypatch, caplog
+) -> None:
+    import logging
+    import automation_miner.graph.build as build_module
+    from automation_miner.models.client import MinerModel
+
+    original = build_module.write_json
+
+    def fail_error(path, payload):  # type: ignore[no-untyped-def]
+        if path.name == "error.json":
+            raise OSError("error store unavailable")
+        return original(path, payload)
+
+    monkeypatch.setattr(build_module, "write_json", fail_error)
+    original_call = MinerModel.call_json
+
+    def explode(self, role, system, prompt, schema):  # type: ignore[no-untyped-def]
+        if role == "layer_analyst":
+            raise RuntimeError("failure for logging")
+        return original_call(self, role, system, prompt, schema)
+
+    monkeypatch.setattr(MinerModel, "call_json", explode)
+    with caplog.at_level(logging.ERROR):
+        with pytest.raises(RuntimeError, match="failure for logging"):
+            run_mine(workspace_path=workspace, idea="Failure logging", dry_run=True)
+
+    run_dir = next((workspace / "runs").iterdir())
+    assert "Unable to persist failure artifact" in caplog.text
+    assert run_dir.name in caplog.text
+    assert read_json(run_dir / "run.json")["status"] == "failed"
+    assert read_json(run_dir / "summary.json")["status"] == "failed"
+
+
+def test_failure_recording_does_not_mask_original_error_on_malformed_manifest(
+    workspace: Path,
+) -> None:
+    from automation_miner.execution import RunExecutionContext
+    from automation_miner.graph.build import _record_failure
+    from automation_miner.schemas import RunBudget
+
+    run_dir = workspace / "runs" / "2026-08-28_malformed-manifest"
+    run_dir.mkdir(parents=True)
+    (run_dir / "run.json").write_text("{not-json", encoding="utf-8")
+    execution = RunExecutionContext(run_dir.name, RunBudget())
+
+    with pytest.raises(RuntimeError, match="original pipeline error"):
+        try:
+            raise RuntimeError("original pipeline error")
+        except RuntimeError as exc:
+            _record_failure(run_dir, exc, execution)
+            raise
+
+    assert read_json(run_dir / "summary.json")["status"] == "failed"
+
+
+def test_run_manifest_exists_during_input_preflight(workspace: Path) -> None:
+    observed: list[str] = []
+
+    def preflight(_quality) -> None:  # type: ignore[no-untyped-def]
+        run_manifests = list((workspace / "runs").glob("*/run.json"))
+        assert len(run_manifests) == 1
+        observed.append(read_json(run_manifests[0])["status"])
+
+    run_mine(
+        workspace_path=workspace,
+        idea="Preflight ownership",
+        dry_run=True,
+        preflight_callback=preflight,
+    )
+
+    assert observed == ["running"]
+
+
+def test_budget_exhaustion_is_terminal_and_attributed(workspace: Path) -> None:
+    from automation_miner.execution import BudgetExceeded
+    from automation_miner.models.client import MinerModel
+    from automation_miner.models.config import load_config
+
+    config = load_config(None)
+    config.budget = {"max_attempts": 1, "max_tokens": 100_000, "max_seconds": 30}
+    model = MinerModel(config, dry_run=True)
+    try:
+        with pytest.raises(BudgetExceeded, match="max_attempts"):
+            run_mine(
+                workspace_path=workspace,
+                idea="Budget limited domain",
+                dry_run=True,
+                model=model,
+            )
+    finally:
+        model.close()
+
+    run_dir = next((workspace / "runs").iterdir())
+    error = read_json(run_dir / "error.json")
+    manifest = read_json(run_dir / "run.json")
+    assert error["status"] == "budget_exhausted"
+    assert error["budget_limit"] == "max_attempts"
+    assert manifest["status"] == "budget_exhausted"
+    assert manifest["usage"]["attempts"] == 1
+
+
+def test_setup_failure_still_has_a_terminal_run_manifest(workspace: Path) -> None:
+    from automation_miner.models.client import MinerModel
+    from automation_miner.models.config import load_config
+
+    config = load_config(None)
+    config.roles["mapper"] = {"provider": "missing-provider", "model": "model"}
+    model = MinerModel(config, dry_run=False)
+    try:
+        with pytest.raises(ValueError, match="not defined"):
+            run_mine(
+                workspace_path=workspace,
+                idea="Invalid provider setup",
+                model=model,
+            )
+    finally:
+        model.close()
+
+    run_dir = next((workspace / "runs").iterdir())
+    assert read_json(run_dir / "run.json")["status"] == "failed"
+    assert read_json(run_dir / "error.json")["stage"] == "input_assessment"
+
+
+def test_invalid_budget_is_recorded_after_run_allocation(workspace: Path) -> None:
+    from automation_miner.models.client import MinerModel
+    from automation_miner.models.config import load_config
+
+    config = load_config(None)
+    config.budget = {"max_attempts": "invalid", "max_tokens": 100, "max_seconds": 30}
+    model = MinerModel(config, dry_run=True)
+    try:
+        with pytest.raises(Exception, match="max_attempts"):
+            run_mine(workspace_path=workspace, idea="Invalid budget", model=model)
+    finally:
+        model.close()
+
+    run_dir = next((workspace / "runs").iterdir())
+    assert read_json(run_dir / "run.json")["status"] == "failed"
+    assert read_json(run_dir / "error.json")["error_type"] == "ValidationError"
+
+
+def test_post_publish_failure_marks_partial_artifacts_failed(workspace: Path, monkeypatch) -> None:
+    import automation_miner.graph.build as build_module
+
+    def fail_reindex(_root: Path) -> None:
+        raise RuntimeError("simulated registry outage")
+
+    monkeypatch.setattr(build_module, "reindex_locked", fail_reindex)
+    with pytest.raises(RuntimeError, match="simulated registry outage"):
+        run_mine(workspace_path=workspace, idea="Partial publication", dry_run=True)
+
+    run_dir = next((workspace / "runs").iterdir())
+    assert read_json(run_dir / "run.json")["status"] == "failed"
+    assert read_json(run_dir / "summary.json")["status"] == "failed"
+    assert "> **Status:** failed  " in (run_dir / "report.md").read_text(encoding="utf-8")
+    assert not list((workspace / "opps").rglob("AM-*.md"))
+    error = read_json(run_dir / "error.json")
+    assert len(error["quarantined_artifacts"]) == 5
+    summary = read_json(run_dir / "summary.json")
+    assert summary["stats"]["published"] == 0
+    assert all(entry["brief_path"] == "" for entry in summary["opportunities"])
 
 
 def test_opportunities_json_filters(workspace: Path) -> None:
@@ -356,7 +572,7 @@ def test_urgent_constraint_publishes_three_and_retains_the_rest(workspace: Path)
 
     # And the report explains what was held back rather than hiding it.
     report = (Path(result["run_dir"]) / "report.md").read_text(encoding="utf-8")
-    assert "## Excluded by Constraint Policy" in report
+    assert "## Excluded from Published Portfolio" in report
     assert "urgent timeline publishes only the top 3" in report
 
 

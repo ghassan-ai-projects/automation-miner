@@ -20,20 +20,36 @@ Two structural changes from v3:
 from __future__ import annotations
 
 import json
+import logging
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
+from html import escape
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Literal, cast
 
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Send
 
 from automation_miner import ingest as ing
 from automation_miner.artifacts.briefs import render_brief, title_slug
-from automation_miner.artifacts.registry import reindex
+from automation_miner.artifacts.publication import (
+    mark_manifest_failed,
+    mark_portfolio_failed,
+    mark_summary_failed,
+    promote_publication,
+    quarantine_run_briefs,
+    write_publication_journal,
+)
+from automation_miner.artifacts.registry import reindex_locked
 from automation_miner.artifacts.reports import render_report, render_run_md, render_summary
-from automation_miner.artifacts.workspace import Workspace, read_json, write_json, write_text
+from automation_miner.artifacts.workspace import (
+    Workspace,
+    read_json,
+    workspace_transaction_lock,
+    write_json,
+    write_text,
+)
 from automation_miner.constraints import normalize_constraint_params, render_constraints
 from automation_miner.context import (
     ContextBudget,
@@ -44,7 +60,8 @@ from automation_miner.context import (
 )
 from automation_miner.graph.loop import run_critique_loop
 from automation_miner.graph.state import MinerState
-from automation_miner.models.client import MinerModel
+from automation_miner.execution import BudgetExceeded, RunExecutionContext
+from automation_miner.models.client import MinerModel, RunScopedModel
 from automation_miner.models.config import load_config
 from automation_miner.prompts import (
     DOMAIN_MAP_SYSTEM,
@@ -76,7 +93,9 @@ from automation_miner.schemas import (
     Opportunity,
     OpportunityCandidate,
     OpportunityDraft,
+    InputQuality,
     RunManifest,
+    RunBudget,
     StageFailure,
     Tier,
 )
@@ -91,41 +110,77 @@ from automation_miner.scoring import (
 )
 
 MAX_ITERATIONS = 10
+LOGGER = logging.getLogger(__name__)
 
 
 def build_graph(
-    model: MinerModel,
+    model: MinerModel | RunScopedModel,
     workspace: Workspace,
     budget: ContextBudget | None = None,
+    preflight_callback: Callable[[InputQuality], None] | None = None,
 ) -> Any:
     """Build the compiled mining pipeline for one model client + workspace."""
     budget = budget or ContextBudget.from_config(model.config.context)
 
+    def _mark_stage(stage: str) -> None:
+        execution = getattr(model, "execution", None)
+        if execution is not None:
+            execution.set_stage(stage)
+            execution.remaining_seconds()
+
     def _index(state: MinerState) -> EvidenceIndex:
-        return EvidenceIndex([Chunk.model_validate(c) for c in state["context"]["chunks"]])
+        chunks = state["context"].get("chunks", [])
+        if not isinstance(chunks, list):
+            raise ValueError("context chunks must be a list")
+        return EvidenceIndex([Chunk.model_validate(chunk) for chunk in chunks])
 
     def _timed(state: MinerState, stage: str, started: float) -> dict[str, float]:
-        return {**state.get("stage_seconds", {}), stage: round(time.time() - started, 2)}
+        elapsed = round(time.time() - started, 2)
+        execution = getattr(model, "execution", None)
+        if execution is not None:
+            execution.record_stage(stage, elapsed)
+        return {**state.get("stage_seconds", {}), stage: elapsed}
 
     def ingest_node(state: MinerState) -> dict[str, Any]:
+        _mark_stage("ingest")
         started = time.time()
         kind, value = state["input_kind"], state["input_value"]
         registry = build_registry(model.config.readers)
         cache_root = workspace.cache_dir
         if kind == "idea":
-            packet = ing.ingest_idea(value, state["constraints"], budget)
+            packet = ing.ingest_idea(
+                value,
+                state["constraints"],
+                budget,
+                preflight_callback=preflight_callback,
+            )
         elif kind == "file":
             packet = ing.ingest_file(
-                Path(value), state["constraints"], model, budget, registry, cache_root
+                Path(value),
+                state["constraints"],
+                model,
+                budget,
+                registry,
+                cache_root,
+                preflight_callback,
             )
         else:
             packet = ing.ingest_kb(
-                Path(value), state["constraints"], model, budget, registry, cache_root
+                Path(value),
+                state["constraints"],
+                model,
+                budget,
+                registry,
+                cache_root,
+                preflight_callback,
             )
         packet = packet.model_copy(
-            update={"constraint_params": state.get("constraint_params", {})}
+            update={
+                "constraint_params": state.get("constraint_params", {}),
+                "raw_constraints": state.get("policy_constraints", ""),
+            }
         )
-        run_dir = workspace.new_run_dir(packet.domain_slug)
+        run_dir = Path(state["run_dir"])
         write_json(run_dir / "context.json", packet)
         return {
             "context": packet.model_dump(mode="json"),
@@ -135,6 +190,7 @@ def build_graph(
         }
 
     def domain_map_node(state: MinerState) -> dict[str, Any]:
+        _mark_stage("domain_map")
         started = time.time()
         ctx = ContextPacket.model_validate(state["context"])
         assessment = InputAssessment.model_validate(state["input_assessment"])
@@ -165,6 +221,7 @@ def build_graph(
         }
 
     def assess_input_node(state: MinerState) -> dict[str, Any]:
+        _mark_stage("input_assessment")
         started = time.time()
         ctx = ContextPacket.model_validate(state["context"])
         result = model.call_json(
@@ -190,6 +247,8 @@ def build_graph(
         return [Send("analyze_layer", {**shared, "layer": layer.value}) for layer in LAYER_ORDER]
 
     def analyze_layer_node(state: MinerState) -> dict[str, Any]:
+        _mark_stage("layer_analysis")
+        started = time.time()
         ctx = ContextPacket.model_validate(state["context"])
         layer = Layer(state["layer"])
         domain_map = DomainMap.model_validate(state["domain_map"])
@@ -198,7 +257,12 @@ def build_graph(
             budget.layer_tokens,
         )
         evidence = render_chunks(
-            selected, header=f"Domain map:\n{domain_map.model_dump_json(indent=2)}"
+            selected,
+            header=(
+                "Domain map:\n<untrusted-artifact>\n"
+                f"{escape(domain_map.model_dump_json(indent=2), quote=False)}\n"
+                "</untrusted-artifact>"
+            ),
         )
         result = model.call_json(
             "layer_analyst",
@@ -214,6 +278,10 @@ def build_graph(
         )
         result = result.model_copy(update={"layer": layer})
         write_json(Path(state["run_dir"]) / "layers" / f"{layer.value}.json", result)
+        execution = getattr(model, "execution", None)
+        if execution is not None:
+            execution.record_stage("layer_analysis", time.time() - started)
+            execution.remaining_seconds()
         return {"layer_analyses": [result.model_dump(mode="json")]}
 
     def _prior_ideas(domain_slug: str) -> list[dict[str, Any]]:
@@ -237,10 +305,11 @@ def build_graph(
         ]
 
     def plan_portfolio_node(state: MinerState) -> dict[str, Any]:
+        _mark_stage("plan_portfolio")
         started = time.time()
         ctx = ContextPacket.model_validate(state["context"])
         analyses = sorted(
-            state["layer_analyses"], key=lambda a: LAYER_ORDER.index(Layer(a["layer"]))
+            state["layer_analyses"], key=lambda a: LAYER_ORDER.index(Layer(str(a["layer"])))
         )
         result = model.call_json(
             "drafter",
@@ -276,6 +345,8 @@ def build_graph(
         ]
 
     def draft_candidate_node(state: MinerState) -> dict[str, Any]:
+        _mark_stage("draft_opportunities")
+        started = time.time()
         ctx = ContextPacket.model_validate(state["context"])
         candidate = OpportunityCandidate.model_validate(state["candidate"])
         selected = _index(state).select(
@@ -307,19 +378,24 @@ def build_graph(
             / f"candidate-{title_slug(candidate.title)}.json",
             draft,
         )
+        execution = getattr(model, "execution", None)
+        if execution is not None:
+            execution.record_stage("draft_opportunities", time.time() - started)
+            execution.remaining_seconds()
         return {"drafts": [draft.model_dump(mode="json")]}
 
     def critique_refine_node(state: MinerState) -> dict[str, Any]:
+        _mark_stage("critique_refine")
         started = time.time()
         run_dir = Path(state["run_dir"])
         ctx = ContextPacket.model_validate(state["context"])
         index = _index(state)
         ordered = sorted(
             state["drafts"],
-            key=lambda d: (LAYER_ORDER.index(Layer(d["layer"])), d["title"]),
+            key=lambda d: (LAYER_ORDER.index(Layer(str(d["layer"]))), str(d["title"])),
         )
         reserved = workspace.reserve_am_numbers(len(ordered))
-        titles = [d["title"] for d in ordered]
+        titles = [str(d["title"]) for d in ordered]
 
         def process(position: int) -> dict[str, Any]:
             raw = ordered[position]
@@ -364,13 +440,17 @@ def build_graph(
         return {"refined": refined, "stage_seconds": _timed(state, "critique_refine", started)}
 
     def score_node(state: MinerState) -> dict[str, Any]:
+        _mark_stage("score")
         started = time.time()
         constraints = state["constraints"]
-        policy = parse_constraint_policy(constraints)
+        policy = parse_constraint_policy(
+            state.get("policy_constraints", constraints), state.get("constraint_params")
+        )
         known_ids = ContextPacket.model_validate(state["context"]).chunk_ids()
 
         def process(item: dict[str, Any]) -> dict[str, Any]:
             draft = OpportunityDraft.model_validate(item["draft"])
+            source_risk = draft.risk_level
             proposed = model.call_json(
                 "scorer",
                 SCORER_SYSTEM,
@@ -396,6 +476,7 @@ def build_graph(
                 calibration=calibration,
                 unresolved_refs=unresolved,
                 quality_gate_reasons=item["quality_gate_reasons"],
+                source_risk_level=source_risk,
             ).model_dump(mode="json")
 
         opportunities = _parallel_map(
@@ -411,10 +492,12 @@ def build_graph(
         }
 
     def rank_filter_node(state: MinerState) -> dict[str, Any]:
+        _mark_stage("rank_filter")
         started = time.time()
         ranked = apply_portfolio_policy(
             [Opportunity.model_validate(o) for o in state["opportunities"]],
-            state["constraints"],
+            state.get("policy_constraints", state["constraints"]),
+            state.get("constraint_params"),
         )
         payload = [o.model_dump(mode="json") for o in ranked]
         write_json(
@@ -430,6 +513,7 @@ def build_graph(
         }
 
     def publish_node(state: MinerState) -> dict[str, Any]:
+        _mark_stage("publish")
         started = time.time()
         run_dir = Path(state["run_dir"])
         ctx = ContextPacket.model_validate(state["context"])
@@ -437,12 +521,25 @@ def build_graph(
         live = published(ranked)
         stats = portfolio_stats(ranked)
 
-        opp_dir = workspace.opp_dir(ctx.domain_slug)
+        staging_dir = run_dir / "publication" / ctx.domain_slug
+        opp_dir = workspace.opps_dir / ctx.domain_slug
         brief_paths: dict[str, str] = {}
+        publication_files: list[dict[str, str]] = []
         for opp in live:
             fname = f"{opp.am_id}-{title_slug(opp.draft.title)}.md"
-            write_text(opp_dir / fname, render_brief(opp, state["run_id"]))
-            brief_paths[opp.am_id] = str(opp_dir / fname)
+            staged_path = staging_dir / fname
+            target_path = opp_dir / fname
+            write_text(
+                staged_path,
+                render_brief(opp, state["run_id"], input_quality=ctx.input_quality),
+            )
+            brief_paths[opp.am_id] = str(target_path)
+            publication_files.append(
+                {
+                    "staged": str(staged_path.relative_to(run_dir)),
+                    "target": str(target_path.relative_to(workspace.root)),
+                }
+            )
 
         write_json(
             run_dir / "opportunities.json",
@@ -456,8 +553,47 @@ def build_graph(
         )
 
         usage = model.usage.snapshot()
+        run_budget = RunBudget.model_validate(state["run_budget"])
         duration = time.time() - state.get("start_ts", time.time())
         stage_seconds = _timed(state, "publish", started)
+        execution = getattr(model, "execution", None)
+        if execution is not None:
+            stage_seconds = {**execution.snapshot().stage_seconds, **stage_seconds}
+
+        manifest = RunManifest(
+            run_id=state["run_id"],
+            domain=ctx.domain,
+            domain_slug=ctx.domain_slug,
+            constraints=ctx.constraints,
+            raw_constraints=ctx.raw_constraints,
+            constraint_params=ctx.constraint_params,
+            source_kind=ctx.source_kind,
+            source_value=state["input_value"],
+            analysis_mode=state["analysis_mode"],
+            requested_mode=state["requested_mode"],
+            created=state["created"],
+            finished=f"{datetime.now():%Y-%m-%dT%H:%M:%S}",
+            duration_seconds=round(duration, 2),
+            max_iterations=state["max_iterations"],
+            profile=state.get("profile", "default"),
+            config_source=model.config.source,
+            prompt_version=PROMPT_VERSION,
+            dry_run=model.dry_run,
+            models=model.routing_table(),
+            opportunities=[o.am_id for o in live],
+            filtered=[o.am_id for o in ranked if not o.published],
+            stage_seconds=stage_seconds,
+            usage=usage,
+            context=ctx.stats,
+            input_quality=ctx.input_quality,
+            retained_quality=ctx.retained_quality,
+            status="completed",
+            publication_status="pending",
+            budget=run_budget,
+        )
+        write_json(run_dir / "run.json", manifest)
+        write_publication_journal(run_dir, "staged", files=publication_files)
+        promote_publication(run_dir, workspace.root, publication_files)
 
         summary = render_summary(
             run_id=state["run_id"],
@@ -469,6 +605,9 @@ def build_graph(
             duration_seconds=round(duration, 2),
             dry_run=model.dry_run,
             brief_paths=brief_paths,
+            status="completed",
+            publication_status="pending",
+            budget=run_budget,
         )
         write_json(run_dir / "summary.json", summary)
         write_text(
@@ -492,38 +631,36 @@ def build_graph(
                 stats=stats,
                 usage=usage,
                 models=model.routing_table(),
+                status="completed",
+                publication_status="pending",
+                budget=run_budget,
             ),
         )
+        write_publication_journal(run_dir, "views_written", files=publication_files)
+        if execution is not None:
+            execution.remaining_seconds()
+        with workspace_transaction_lock(workspace.root):
+            write_json(
+                run_dir / "run.json",
+                manifest.model_copy(
+                    update={
+                        "finished": f"{datetime.now():%Y-%m-%dT%H:%M:%S}",
+                        "publication_status": "complete",
+                    }
+                ),
+            )
+            write_publication_journal(run_dir, "manifest_complete", files=publication_files)
+            from automation_miner.artifacts.publication import complete_publication_views
 
-        manifest = RunManifest(
-            run_id=state["run_id"],
-            domain=ctx.domain,
-            domain_slug=ctx.domain_slug,
-            constraints=ctx.constraints,
-            constraint_params=ctx.constraint_params,
-            source_kind=ctx.source_kind,
-            source_value=state["input_value"],
-            analysis_mode=state["analysis_mode"],
-            created=state["created"],
-            finished=f"{datetime.now():%Y-%m-%dT%H:%M:%S}",
-            duration_seconds=round(duration, 2),
-            max_iterations=state["max_iterations"],
-            profile=state.get("profile", "default"),
-            config_source=model.config.source,
-            prompt_version=PROMPT_VERSION,
-            dry_run=model.dry_run,
-            models=model.routing_table(),
-            opportunities=[o.am_id for o in live],
-            filtered=[o.am_id for o in ranked if not o.published],
-            stage_seconds=stage_seconds,
-            usage=usage,
-            context=ctx.stats,
-        )
-        write_json(run_dir / "run.json", manifest)
-        reindex(workspace.root)
+            complete_publication_views(run_dir)
+            reindex_locked(workspace.root)
+            write_publication_journal(run_dir, "complete", files=publication_files)
+        if execution is not None:
+            execution.remaining_seconds()
         return {
             "report_path": str(run_dir / "report.md"),
             "summary_path": str(run_dir / "summary.json"),
+            "status": "completed",
             "stage_seconds": stage_seconds,
         }
 
@@ -581,6 +718,7 @@ def run_mine(
     mode: str = "auto",
     constraint_params: dict[str, Any] | None = None,
     model: MinerModel | None = None,
+    preflight_callback: Callable[[InputQuality], None] | None = None,
 ) -> MinerState:
     """Run the full pipeline once. Exactly one of idea/file/kb is required."""
     provided = [x is not None for x in (idea, file, kb)]
@@ -594,6 +732,8 @@ def run_mine(
         raise ValueError("mode must be auto, operational, or strategy") from exc
     normalized_params = normalize_constraint_params(constraint_params)
     effective_constraints = render_constraints(constraints, normalized_params)
+    kind: Literal["idea", "file", "kb"]
+    value: str
     if idea is not None:
         kind, value = "idea", idea
     elif file is not None:
@@ -605,28 +745,98 @@ def run_mine(
     if model is None:
         model = MinerModel(load_config(workspace_path, profile), dry_run=dry_run)
     workspace = Workspace(workspace_path)
+    run_budget = RunBudget()
+    if idea is not None:
+        preliminary_domain = " ".join(idea.split())[: ing.MAX_DOMAIN_CHARS] or "untitled-domain"
+    elif file is not None:
+        preliminary_domain = file.stem or "untitled-file"
+    else:
+        preliminary_domain = kb.name if kb is not None else "untitled-kb"
+    preliminary_slug = ing.slugify(preliminary_domain)
+    initial_analysis_mode = cast(
+        Literal["operational", "strategy"],
+        requested_mode.value
+        if requested_mode is not AnalysisMode.AUTO
+        else AnalysisMode.OPERATIONAL.value,
+    )
     try:
         workspace.ensure()
+        run_dir = workspace.new_run_dir(preliminary_slug)
+        run_id = run_dir.name
+        created = f"{datetime.now():%Y-%m-%dT%H:%M:%S}"
+        budget_error: Exception | None = None
+        try:
+            run_budget = RunBudget.model_validate(model.config.budget)
+        except Exception as exc:
+            budget_error = exc
+        execution = RunExecutionContext(run_id, run_budget)
+        scoped_model = RunScopedModel(model, execution)
+        source_value = value or "(empty input)"
+        models: dict[str, str] = {}
+        try:
+            models = model.routing_table()
+        except Exception:
+            pass
+        initial_manifest = RunManifest(
+            run_id=run_id,
+            domain=preliminary_domain,
+            domain_slug=preliminary_slug,
+            constraints=effective_constraints,
+            raw_constraints=constraints,
+            constraint_params=normalized_params,
+            source_kind=kind,
+            source_value=source_value,
+            analysis_mode=initial_analysis_mode,
+            requested_mode=requested_mode.value,
+            status="running",
+            budget=run_budget,
+            created=created,
+            max_iterations=max_iterations,
+            profile=profile,
+            config_source=model.config.source,
+            prompt_version=PROMPT_VERSION,
+            dry_run=model.dry_run,
+            models=models,
+        )
+        try:
+            write_json(run_dir / "run.json", initial_manifest)
+        except Exception as exc:
+            _record_failure(run_dir, exc, execution)
+            setattr(exc, "run_id", run_id)
+            setattr(exc, "run_dir", str(run_dir))
+            raise
+        if budget_error is not None:
+            _record_failure(run_dir, budget_error, execution)
+            setattr(budget_error, "run_id", run_id)
+            setattr(budget_error, "run_dir", str(run_dir))
+            raise budget_error
         initial: dict[str, Any] = {
             "workspace": str(workspace_path),
+            "run_dir": str(run_dir),
+            "run_id": run_id,
             "input_kind": kind,
             "input_value": value,
             "constraints": effective_constraints,
+            "policy_constraints": constraints,
             "constraint_params": normalized_params,
+            "run_budget": run_budget.model_dump(mode="json"),
+            "status": "running",
             "max_iterations": max_iterations,
             "profile": profile,
             "requested_mode": requested_mode.value,
-            "created": f"{datetime.now():%Y-%m-%dT%H:%M:%S}",
+            "created": created,
             "start_ts": time.time(),
             "layer_analyses": [],
             "drafts": [],
             "stage_seconds": {},
         }
-        graph = build_graph(model, workspace)
         try:
-            result: MinerState = graph.invoke(initial)  # type: ignore[assignment]
+            graph = build_graph(scoped_model, workspace, preflight_callback=preflight_callback)
+            result: MinerState = graph.invoke(initial)
         except Exception as exc:
-            _record_failure(workspace, exc)
+            _record_failure(run_dir, exc, execution)
+            setattr(exc, "run_id", run_id)
+            setattr(exc, "run_dir", str(run_dir))
             raise
         return result
     finally:
@@ -634,56 +844,169 @@ def run_mine(
             model.close()
 
 
-def _record_failure(workspace: Workspace, exc: BaseException) -> None:
-    """Write error.json into the newest run directory.
-
-    Without this a failed stage left only ``context.json`` behind, with nothing
-    explaining what broke — which contradicts artifacts being the source of truth.
-    """
+def _record_failure(
+    run_dir: Path, exc: BaseException, execution: RunExecutionContext
+) -> None:
+    """Persist terminal failure state into the exact run that raised."""
+    snapshot = execution.snapshot()
+    status: Literal["failed", "budget_exhausted"] = (
+        "budget_exhausted" if isinstance(exc, BudgetExceeded) else "failed"
+    )
+    quarantined: list[str] = []
     try:
-        runs = sorted(
-            (p for p in workspace.runs_dir.iterdir() if p.is_dir()),
-            key=lambda p: p.stat().st_mtime,
+        with workspace_transaction_lock(run_dir.parent.parent):
+            quarantined = quarantine_run_briefs(run_dir.parent.parent, run_dir)
+            reindex_locked(run_dir.parent.parent)
+    except Exception:
+        LOGGER.exception(
+            "Unable to quarantine or rebuild registry while recording failed run %s at %s",
+            run_dir.name,
+            run_dir,
         )
-        if not runs:
-            return
-        run_dir = runs[-1]
-        written = sorted(
-            str(p.relative_to(run_dir)) for p in run_dir.rglob("*") if p.is_file()
+    if (run_dir / "publication.json").is_file():
+        try:
+            write_publication_journal(run_dir, "quarantined")
+        except Exception:
+            LOGGER.exception(
+                "Unable to close publication journal for failed run %s at %s",
+                run_dir.name,
+                run_dir,
+            )
+    written = sorted(str(p.relative_to(run_dir)) for p in run_dir.rglob("*") if p.is_file())
+    failure = StageFailure(
+        run_id=run_dir.name,
+        stage=snapshot.stage,
+        error_type=type(exc).__name__,
+        error=str(exc)[:2_000],
+        created=f"{datetime.now():%Y-%m-%dT%H:%M:%S}",
+        status=status,
+        budget=execution.budget,
+        budget_limit=getattr(exc, "limit", ""),
+        observed_attempts=snapshot.attempts,
+        observed_tokens=snapshot.tokens,
+        stage_seconds=snapshot.stage_seconds,
+        usage=execution.usage.snapshot(),
+        artifacts_written=written,
+        quarantined_artifacts=quarantined,
+    )
+    try:
+        write_json(run_dir / "error.json", failure)
+    except Exception:
+        LOGGER.exception(
+            "Unable to persist failure artifact for run %s at %s",
+            run_dir.name,
+            run_dir,
         )
-        write_json(
-            run_dir / "error.json",
-            StageFailure(
-                run_id=run_dir.name,
-                stage=_infer_stage(written),
-                error_type=type(exc).__name__,
-                error=str(exc)[:2_000],
-                created=f"{datetime.now():%Y-%m-%dT%H:%M:%S}",
-                artifacts_written=written,
-            ),
+
+    manifest_path = run_dir / "run.json"
+    try:
+        raw_manifest = read_json(manifest_path) if manifest_path.is_file() else {}
+    except (OSError, ValueError):
+        LOGGER.exception("Unable to read manifest while recording failed run %s at %s", run_dir.name, run_dir)
+        raw_manifest = {}
+    manifest_data = raw_manifest if isinstance(raw_manifest, dict) else {}
+    if manifest_data:
+        mark_manifest_failed(manifest_data, status)
+        manifest_data.update(
+            {
+                "duration_seconds": snapshot.elapsed_seconds,
+                "usage": execution.usage.snapshot().model_dump(mode="json"),
+                "stage_seconds": snapshot.stage_seconds,
+            }
         )
-    except OSError:
-        pass
+        try:
+            write_json(manifest_path, manifest_data)
+        except Exception:
+            LOGGER.exception(
+                "Unable to update terminal manifest for run %s at %s", run_dir.name, run_dir
+            )
+
+    summary_path = run_dir / "summary.json"
+    try:
+        summary = read_json(summary_path) if summary_path.is_file() else _failure_summary(
+            run_dir, manifest_data, status, execution, snapshot.elapsed_seconds, exc
+        )
+        if isinstance(summary, dict):
+            mark_summary_failed(summary, status)
+            summary.update(
+                {
+                    "duration_seconds": snapshot.elapsed_seconds,
+                    "usage": execution.usage.snapshot().model_dump(mode="json"),
+                }
+            )
+            write_json(summary_path, summary)
+    except Exception:
+        LOGGER.exception(
+            "Unable to persist failure summary for run %s at %s", run_dir.name, run_dir
+        )
+
+    portfolio_path = run_dir / "opportunities.json"
+    try:
+        portfolio = read_json(portfolio_path) if portfolio_path.is_file() else {}
+        if isinstance(portfolio, dict):
+            mark_portfolio_failed(portfolio, status)
+            write_json(portfolio_path, portfolio)
+    except Exception:
+        LOGGER.exception(
+            "Unable to persist failure portfolio for run %s at %s", run_dir.name, run_dir
+        )
+
+    report_path = run_dir / "report.md"
+    try:
+        domain = str(manifest_data.get("domain", run_dir.name))
+        report = (
+            f"# Automation Mining Report — {domain}\n\n"
+            f"> **Run:** `{run_dir.name}`  \n"
+            f"> **Status:** {status}  \n"
+            "> **Publication:** pending  \n"
+            "> **Published opportunities:** 0  \n\n"
+            "## Failure\n\n"
+            f"- **Stage:** {snapshot.stage}\n"
+            f"- **Error:** {type(exc).__name__}: {str(exc)[:2_000]}\n"
+            "- **Details:** see `error.json` and `run.json`.\n"
+        )
+        write_text(report_path, report)
+    except Exception:
+        LOGGER.exception(
+            "Unable to persist failure report for run %s at %s", run_dir.name, run_dir
+        )
 
 
-# Artifact each stage produces, in pipeline order. The last one present tells us
-# how far the run got.
-_STAGE_ARTIFACTS: tuple[tuple[str, str], ...] = (
-    ("context.json", "input_assessment"),
-    ("input_assessment.json", "domain_map"),
-    ("domain_map.json", "layer_analysis"),
-    ("layers", "plan_portfolio"),
-    ("candidate_portfolio.json", "draft_opportunities"),
-    ("drafts", "critique_refine"),
-    ("scores.json", "rank_filter"),
-    ("ranked.json", "publish"),
-)
-
-
-def _infer_stage(written: list[str]) -> str:
-    """Name the stage that most likely failed, from what was written."""
-    stage = "ingest"
-    for marker, next_stage in _STAGE_ARTIFACTS:
-        if any(path == marker or path.startswith(f"{marker}/") for path in written):
-            stage = next_stage
-    return stage
+def _failure_summary(
+    run_dir: Path,
+    manifest: dict[str, Any],
+    status: str,
+    execution: RunExecutionContext,
+    duration: float,
+    exc: BaseException,
+) -> dict[str, Any]:
+    """Create a valid minimal summary when failure precedes normal rendering."""
+    return {
+        "run_id": run_dir.name,
+        "domain": str(manifest.get("domain", run_dir.name)),
+        "domain_slug": str(manifest.get("domain_slug", "unknown")),
+        "constraints": str(manifest.get("constraints", "")),
+        "raw_constraints": str(manifest.get("raw_constraints", "")),
+        "constraint_params": manifest.get("constraint_params", {}),
+        "created": str(manifest.get("created", "")),
+        "status": status,
+        "publication_status": "pending",
+        "budget": execution.budget.model_dump(mode="json"),
+        "duration_seconds": duration,
+        "dry_run": bool(manifest.get("dry_run", False)),
+        "stats": {
+            "total": 0,
+            "published": 0,
+            "filtered": 0,
+            "by_layer": {},
+            "by_tier": {},
+            "avg_ice": 0.0,
+            "median_ice": 0.0,
+            "top_ice": 0,
+            "top_id": "",
+            "filters": {},
+        },
+        "usage": execution.usage.snapshot().model_dump(mode="json"),
+        "opportunities": [],
+        "notes": [f"{type(exc).__name__}: {str(exc)[:2_000]}", "See error.json for details."],
+    }

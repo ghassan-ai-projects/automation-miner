@@ -48,6 +48,12 @@ DEFAULT_CONCURRENCY: dict[str, Any] = {
     "score": 4,
 }
 
+DEFAULT_BUDGET: dict[str, Any] = {
+    "max_attempts": 70,
+    "max_tokens": 120_000,
+    "max_seconds": 1_800.0,
+}
+
 DEFAULT_CONFIG: dict[str, Any] = {
     "providers": {
         "openrouter": {
@@ -122,6 +128,7 @@ class MinerConfig:
     readers: dict[str, Any] = field(default_factory=dict)
     retry: RetryPolicy = field(default_factory=RetryPolicy)
     concurrency: dict[str, int] = field(default_factory=lambda: dict(DEFAULT_CONCURRENCY))
+    budget: dict[str, Any] = field(default_factory=lambda: dict(DEFAULT_BUDGET))
     source: str = "defaults"
 
     def workers_for(self, stage: str) -> int:
@@ -199,14 +206,14 @@ class MinerConfig:
 
 def _as_float(value: Any, default: float) -> float:
     try:
-        return float(value)  # type: ignore[arg-type]
+        return float(value)
     except (TypeError, ValueError):
         return default
 
 
 def _as_int(value: Any, default: int) -> int:
     try:
-        return int(value)  # type: ignore[arg-type]
+        return int(value)
     except (TypeError, ValueError):
         return default
 
@@ -215,7 +222,7 @@ def load_config(workspace: Path | None = None, profile: str = "default") -> Mine
     """Load miner.toml (workspace first, then user config dir) plus a profile.
 
     A ``[profiles.<name>]`` table may override ``roles``, ``context``,
-    ``readers``, ``retry``, and ``concurrency``.
+    ``readers``, ``retry``, ``concurrency``, and ``budget``.
     """
     candidates: list[Path] = []
     if workspace is not None:
@@ -242,6 +249,7 @@ def load_config(workspace: Path | None = None, profile: str = "default") -> Mine
     context = {**data.get("context", {}), **overrides.get("context", {})}
     readers = {**data.get("readers", {}), **overrides.get("readers", {})}
     retry = {**data.get("retry", {}), **overrides.get("retry", {})}
+    budget = {**DEFAULT_BUDGET, **data.get("budget", {}), **overrides.get("budget", {})}
     concurrency = {
         **DEFAULT_CONCURRENCY,
         **data.get("concurrency", {}),
@@ -254,5 +262,6 @@ def load_config(workspace: Path | None = None, profile: str = "default") -> Mine
         readers=readers,
         retry=RetryPolicy.from_dict(retry),
         concurrency=concurrency,
+        budget=budget,
         source=str(path),
     )

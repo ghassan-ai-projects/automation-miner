@@ -35,7 +35,7 @@ from __future__ import annotations
 import importlib
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from automation_miner.readers.base import (
     Availability,
@@ -264,12 +264,12 @@ def _instantiate(factory: Any, options: dict[str, Any]) -> Reader:
     """Build a reader from a class or zero-argument callable."""
     if isinstance(factory, type):
         try:
-            return factory(**options)  # type: ignore[return-value]
+            return cast(Reader, factory(**options))
         except TypeError:
-            return factory()  # type: ignore[return-value]
+            return cast(Reader, factory())
     if callable(factory):
-        return factory()  # type: ignore[return-value]
-    return factory  # already an instance
+        return cast(Reader, factory())
+    return cast(Reader, factory)  # already an instance
 
 
 def build_registry(config: dict[str, Any] | None = None) -> ReaderRegistry:
@@ -327,9 +327,9 @@ def build_registry(config: dict[str, Any] | None = None) -> ReaderRegistry:
             registry.errors.append(f"readers.custom[{index}] {target!r} failed to load: {exc}")
             continue
         if suffixes := entry.get("suffixes"):
-            reader.suffixes = tuple(str(s).lower() for s in suffixes)  # type: ignore[misc]
+            reader.suffixes = tuple(str(s).lower() for s in suffixes)
         if name := entry.get("name"):
-            reader.name = str(name)  # type: ignore[misc]
+            reader.name = str(name)
         if wanted(getattr(reader, "name", "")):
             registry.register(reader, priority=20, source="miner.toml")
 

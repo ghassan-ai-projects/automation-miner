@@ -21,7 +21,7 @@ def test_repeatable_constraint_args_render_as_binding_contract() -> None:
         "max_agents": "1",
     }
     assert "budget:medium" in rendered
-    assert "treat every entry as binding" in rendered
+    assert "Unknown constraint parameters (advisory context only)" in rendered
     assert "- agent = openclaw" in rendered
     assert "- deployment = local-only" in rendered
 
@@ -45,3 +45,8 @@ def test_python_params_accept_non_string_scalar_values() -> None:
         "agent": "openclaw",
         "max_agents": "1",
     }
+
+
+def test_constraint_keys_are_unique_case_insensitively() -> None:
+    with pytest.raises(ValueError, match="case-insensitively"):
+        normalize_constraint_params({"budget": "low", "BUDGET": "high"})

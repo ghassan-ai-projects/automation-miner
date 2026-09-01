@@ -19,11 +19,11 @@ from automation_miner.prompts import (
 from automation_miner.schemas import Critique, OpportunityDraft
 
 if TYPE_CHECKING:
-    from automation_miner.models.client import MinerModel
+    from automation_miner.models.client import MinerModel, RunScopedModel
 
 
 def run_critique_loop(
-    model: MinerModel,
+    model: MinerModel | RunScopedModel,
     draft: OpportunityDraft,
     other_titles: list[str],
     max_iterations: int,

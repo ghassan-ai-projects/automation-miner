@@ -166,6 +166,24 @@ class ContextStats(ArtifactModel):
     digest_cache_hits: int = 0
 
 
+class InputQuality(ArtifactModel):
+    """Deterministic evidence-richness signal used for preflight and framing."""
+
+    level: Literal["thin", "moderate", "rich"] = "thin"
+    score: int = Field(default=0, ge=0, le=100)
+    signals: list[str] = Field(default_factory=list)
+    missing: list[str] = Field(default_factory=list)
+    warning: str = ""
+
+
+class RunBudget(ArtifactModel):
+    """Hard per-invocation admission limits."""
+
+    max_attempts: int = Field(default=70, ge=1)
+    max_tokens: int = Field(default=120_000, ge=1)
+    max_seconds: float = Field(default=1_800.0, gt=0)
+
+
 class ContextPacket(ArtifactModel):
     """Normalized, budget-bounded input for the pipeline.
 
@@ -176,6 +194,7 @@ class ContextPacket(ArtifactModel):
     domain: str
     domain_slug: str
     constraints: str = ""
+    raw_constraints: str = ""
     constraint_params: dict[str, str] = Field(default_factory=dict)
     source_kind: Literal["idea", "file", "kb"]
     overview: str
@@ -184,6 +203,8 @@ class ContextPacket(ArtifactModel):
     skipped: list[SkippedFile] = Field(default_factory=list)
     reader_errors: list[str] = Field(default_factory=list)
     stats: ContextStats = Field(default_factory=ContextStats)
+    input_quality: InputQuality = Field(default_factory=InputQuality)
+    retained_quality: InputQuality = Field(default_factory=InputQuality)
 
     def chunk_ids(self) -> set[str]:
         return {chunk.id for chunk in self.chunks}
@@ -299,6 +320,23 @@ class PhasePlan(ArtifactModel):
     autonomy: list[str]
 
 
+class ExternalDataChannel(ArtifactModel):
+    """A structured external channel declaration used by residency policy."""
+
+    name: str
+    purpose: str
+    hosting_region: str
+    eu_hosting_verified: bool = False
+
+
+class PaymentAction(ArtifactModel):
+    """A structured payment action declaration used by approval policy."""
+
+    action: str
+    autonomous: bool = False
+    human_approval_required: bool = True
+
+
 class OpportunityDraft(ArtifactModel):
     """A single automation opportunity draft (pre-scoring)."""
 
@@ -324,12 +362,8 @@ class OpportunityDraft(ArtifactModel):
     evidence_refs: list[str] = Field(default_factory=list)
     assumptions: list[str]
     validation_questions: list[str]
-
-
-class DraftBatch(ArtifactModel):
-    """Wrapper so the drafter can return 1-2 drafts as one JSON object."""
-
-    drafts: list[OpportunityDraft] = Field(min_length=1, max_length=2)
+    external_data_channels: list[ExternalDataChannel] = Field(default_factory=list)
+    payment_actions: list[PaymentAction] = Field(default_factory=list)
 
 
 # Critic rubric weights (sum to 1.0).
@@ -427,6 +461,7 @@ class Opportunity(ArtifactModel):
     calibration: list[str] = Field(default_factory=list)
     unresolved_refs: list[str] = Field(default_factory=list)
     quality_gate_reasons: list[str] = Field(default_factory=list)
+    source_risk_level: Level | None = None
 
     @model_validator(mode="after")
     def validate_derived_fields(self) -> Opportunity:
@@ -467,10 +502,13 @@ class RoleUsage(ArtifactModel):
     """Per-role call and token accounting."""
 
     calls: int = 0
+    logical_calls: int = 0
+    attempts: int = 0
     retries: int = 0
     failures: int = 0
     prompt_tokens: int = 0
     completion_tokens: int = 0
+    attempted_tokens: int = 0
     seconds: float = 0.0
     exact: bool = False
 
@@ -483,11 +521,14 @@ class RunUsage(ArtifactModel):
     """Whole-run totals. Token counts are exact when the provider reports them."""
 
     calls: int = 0
+    logical_calls: int = 0
+    attempts: int = 0
     retries: int = 0
     failures: int = 0
     prompt_tokens: int = 0
     completion_tokens: int = 0
     total_tokens: int = 0
+    attempted_tokens: int = 0
     seconds: float = 0.0
     exact: bool = False
     by_role: dict[str, RoleUsage] = Field(default_factory=dict)
@@ -513,6 +554,7 @@ class SummaryEntry(ArtifactModel):
     filters: list[str] = Field(default_factory=list)
     problem: str
     brief_path: str = ""
+    artifact_type: Literal["opportunity_brief", "discovery_hypothesis"] = "opportunity_brief"
 
 
 class RunSummary(ArtifactModel):
@@ -522,11 +564,18 @@ class RunSummary(ArtifactModel):
     domain: str
     domain_slug: str
     constraints: str = ""
+    raw_constraints: str = ""
+    constraint_params: dict[str, str] = Field(default_factory=dict)
     created: str = ""
+    status: Literal["running", "completed", "failed", "budget_exhausted"] = "completed"
+    publication_status: Literal["pending", "complete"] = "complete"
+    budget: RunBudget = Field(default_factory=RunBudget)
     duration_seconds: float = 0.0
     dry_run: bool = False
     stats: PortfolioStats = Field(default_factory=PortfolioStats)
     context: ContextStats = Field(default_factory=ContextStats)
+    input_quality: InputQuality = Field(default_factory=InputQuality)
+    retained_quality: InputQuality = Field(default_factory=InputQuality)
     usage: RunUsage = Field(default_factory=RunUsage)
     opportunities: list[SummaryEntry] = Field(default_factory=list)
     notes: list[str] = Field(default_factory=list)
@@ -539,10 +588,15 @@ class RunManifest(ArtifactModel):
     domain: str
     domain_slug: str
     constraints: str
+    raw_constraints: str = ""
     constraint_params: dict[str, str] = Field(default_factory=dict)
     source_kind: Literal["idea", "file", "kb"]
     source_value: str = Field(min_length=1)
     analysis_mode: Literal["operational", "strategy"]
+    requested_mode: Literal["auto", "operational", "strategy"] = "auto"
+    status: Literal["running", "completed", "failed", "budget_exhausted"] = "running"
+    publication_status: Literal["pending", "complete"] = "pending"
+    budget: RunBudget = Field(default_factory=RunBudget)
     created: str
     finished: str = ""
     duration_seconds: float = Field(default=0.0, ge=0)
@@ -557,6 +611,8 @@ class RunManifest(ArtifactModel):
     stage_seconds: dict[str, float] = Field(default_factory=dict)
     usage: RunUsage = Field(default_factory=RunUsage)
     context: ContextStats = Field(default_factory=ContextStats)
+    input_quality: InputQuality = Field(default_factory=InputQuality)
+    retained_quality: InputQuality = Field(default_factory=InputQuality)
 
 
 class StageFailure(ArtifactModel):
@@ -567,4 +623,12 @@ class StageFailure(ArtifactModel):
     error_type: str
     error: str
     created: str
+    status: Literal["failed", "budget_exhausted"] = "failed"
+    budget: RunBudget = Field(default_factory=RunBudget)
+    budget_limit: str = ""
+    observed_attempts: int = 0
+    observed_tokens: int = 0
+    stage_seconds: dict[str, float] = Field(default_factory=dict)
+    usage: RunUsage = Field(default_factory=RunUsage)
     artifacts_written: list[str] = Field(default_factory=list)
+    quarantined_artifacts: list[str] = Field(default_factory=list)

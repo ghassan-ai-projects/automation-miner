@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable
 
 from automation_miner.context import (
     ContextBudget,
@@ -28,6 +28,7 @@ from automation_miner.context import (
     render_chunks,
 )
 from automation_miner.digest import DigestCache, digest_evidence
+from automation_miner.quality import profile_input_quality
 from automation_miner.readers import (
     ReaderError,
     ReaderRegistry,
@@ -35,10 +36,16 @@ from automation_miner.readers import (
     SourceDocument,
     build_registry,
 )
-from automation_miner.schemas import Chunk, ContextPacket, ContextStats, SkippedFile
+from automation_miner.schemas import (
+    Chunk,
+    ContextPacket,
+    ContextStats,
+    InputQuality,
+    SkippedFile,
+)
 
 if TYPE_CHECKING:
-    from automation_miner.models.client import MinerModel
+    from automation_miner.models.client import MinerModel, RunScopedModel
 
 MAX_DOMAIN_CHARS = 200
 MAX_SLUG_CHARS = 80
@@ -101,10 +108,13 @@ def _read_all(
             document = registry.read(path)
         except ReaderError as exc:
             reader = registry.reader_for(path)
+            reason = str(exc)
+            if exc.meta.get("page_errors"):
+                reason += f"; page telemetry: {exc.meta['page_errors']}"
             skipped.append(
                 SkippedFile(
                     path=str(path),
-                    reason=str(exc),
+                    reason=reason,
                     reader=getattr(reader, "name", "") if reader else "",
                 )
             )
@@ -131,14 +141,18 @@ def _build_packet(
     skipped: list[SkippedFile],
     constraints: str,
     budget: ContextBudget,
-    model: MinerModel | None,
+    model: MinerModel | RunScopedModel | None,
     cache_root: Path | None,
     reader_errors: list[str],
+    preflight_callback: Callable[[InputQuality], None] | None = None,
 ) -> ContextPacket:
     """Chunk, digest if over budget, and assemble the packet with its stats."""
     source_chars = sum(document.chars for document in documents)
     chunks: list[Chunk] = chunk_documents(documents, budget)
     raw_tokens = sum(chunk.tokens for chunk in chunks)
+    source_quality = profile_input_quality(source_kind, chunks, source_chars)
+    if preflight_callback is not None:
+        preflight_callback(source_quality)
 
     digested = False
     truncated = False
@@ -195,6 +209,17 @@ def _build_packet(
         digest_calls=digest_calls,
         digest_cache_hits=cache_hits,
     )
+    retained_quality = profile_input_quality(source_kind, chunks, evidence_chars)
+    telemetry = list(reader_errors)
+    for document in documents:
+        failed_pages = document.meta.get("pages_failed", 0)
+        if failed_pages:
+            detail = document.meta.get("page_errors", "")
+            telemetry.append(
+                f"{document.name}: {failed_pages} PDF page(s) failed extraction"
+                + (f" ({detail})" if detail else "")
+            )
+
     cleaned = _clean_domain(domain)
     return ContextPacket(
         domain=cleaned,
@@ -205,8 +230,10 @@ def _build_packet(
         chunks=chunks,
         files=[document.path for document in documents],
         skipped=skipped,
-        reader_errors=reader_errors,
+        reader_errors=telemetry,
         stats=stats,
+        input_quality=source_quality,
+        retained_quality=retained_quality,
     )
 
 
@@ -214,6 +241,7 @@ def ingest_idea(
     idea: str,
     constraints: str = "",
     budget: ContextBudget | None = None,
+    preflight_callback: Callable[[InputQuality], None] | None = None,
 ) -> ContextPacket:
     """Use a raw idea/domain string directly as context."""
     content = idea.strip()
@@ -236,6 +264,7 @@ def ingest_idea(
         model=None,
         cache_root=None,
         reader_errors=[],
+        preflight_callback=preflight_callback,
     )
     return packet.model_copy(update={"files": []})
 
@@ -243,10 +272,11 @@ def ingest_idea(
 def ingest_file(
     path: Path,
     constraints: str = "",
-    model: MinerModel | None = None,
+    model: MinerModel | RunScopedModel | None = None,
     budget: ContextBudget | None = None,
     registry: ReaderRegistry | None = None,
     cache_root: Path | None = None,
+    preflight_callback: Callable[[InputQuality], None] | None = None,
 ) -> ContextPacket:
     """Read one file of any registered format as context."""
     if not path.is_file():
@@ -269,16 +299,18 @@ def ingest_file(
         model=model,
         cache_root=cache_root,
         reader_errors=list(registry.errors),
+        preflight_callback=preflight_callback,
     )
 
 
 def ingest_kb(
     folder: Path,
     constraints: str = "",
-    model: MinerModel | None = None,
+    model: MinerModel | RunScopedModel | None = None,
     budget: ContextBudget | None = None,
     registry: ReaderRegistry | None = None,
     cache_root: Path | None = None,
+    preflight_callback: Callable[[InputQuality], None] | None = None,
 ) -> ContextPacket:
     """Normalize a knowledge-base folder into one bounded evidence index."""
     if not folder.is_dir():
@@ -306,6 +338,7 @@ def ingest_kb(
         model=model,
         cache_root=cache_root,
         reader_errors=list(registry.errors),
+        preflight_callback=preflight_callback,
     )
 
 

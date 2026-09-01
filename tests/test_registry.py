@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from automation_miner.artifacts.registry import build_registry, parse_frontmatter, reindex
@@ -18,7 +19,7 @@ confidence: 4
 ease: 4
 created: "2026-07-22"
 updated: "2026-07-22"
-source: "2026-07-22_test-domain"
+source: "2026-07-20_alpha-domain"
 tags: [automation, {layer}, test-domain]
 ---
 
@@ -28,6 +29,24 @@ tags: [automation, {layer}, test-domain]
 
 def _write_brief(root: Path, domain: str, am_id: str, title: str, layer: str, ice: int,
                  status: str = "identified") -> None:
+    run_dir = root / "runs" / "2026-07-20_alpha-domain"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    manifest = run_dir / "run.json"
+    if not manifest.exists():
+        manifest.write_text(
+            json.dumps(
+                {
+                    "status": "completed",
+                    "publication_status": "complete",
+                    "opportunities": [am_id],
+                }
+            ),
+            encoding="utf-8",
+        )
+    else:
+        data = json.loads(manifest.read_text(encoding="utf-8"))
+        data.setdefault("opportunities", []).append(am_id)
+        manifest.write_text(json.dumps(data), encoding="utf-8")
     d = root / "opps" / domain
     d.mkdir(parents=True, exist_ok=True)
     (d / f"{am_id}-{title.lower().replace(' ', '-')}.md").write_text(
@@ -126,3 +145,16 @@ def test_registry_skips_mismatched_and_duplicate_ids_with_warnings(tmp_path: Pat
     registry = build_registry(tmp_path)
     assert [entry["i"] for entry in registry["entries"]] == ["AM-001"]
     assert len(registry["warnings"]) == 2
+
+
+def test_registry_skips_non_object_source_manifest_without_crashing(tmp_path: Path) -> None:
+    _write_brief(tmp_path, "alpha", "AM-001", "Untrusted", "document", 40)
+    manifest = tmp_path / "runs" / "2026-07-20_alpha-domain" / "run.json"
+    manifest.write_text("[]", encoding="utf-8")
+
+    registry = build_registry(tmp_path)
+
+    assert registry["entries"] == []
+    assert registry["warnings"][0]["reason"] == (
+        "source run 2026-07-20_alpha-domain is unreadable"
+    )

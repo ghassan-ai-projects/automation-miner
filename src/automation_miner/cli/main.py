@@ -108,6 +108,11 @@ def _build_parser() -> argparse.ArgumentParser:
 def _cmd_mine(args: argparse.Namespace) -> int:
     from automation_miner.graph.build import run_mine
 
+    def show_preflight(profile: Any) -> None:
+        stream = sys.stderr if args.as_json else sys.stdout
+        print(f"Preflight: {profile.level} evidence ({profile.score}/100)", file=stream)
+        print(f"Preflight warning: {profile.warning}", file=stream)
+
     if args.idea is None and args.file is None and args.kb is None:
         print("error: provide an idea, --file, or --kb", file=sys.stderr)
         return 2
@@ -127,6 +132,7 @@ def _cmd_mine(args: argparse.Namespace) -> int:
         dry_run=args.dry_run,
         mode=args.mode,
         constraint_params=constraint_params,
+        preflight_callback=show_preflight,
     )
     summary_path = result.get("summary_path", "")
     summary: dict[str, Any] = {}
@@ -143,6 +149,8 @@ def _cmd_mine(args: argparse.Namespace) -> int:
     entries = summary.get("opportunities", [])
 
     print(f"Run: {result['run_id']}")
+    if summary.get("status"):
+        print(f"Status: {summary['status']}")
     if context:
         line = (
             f"Context: {context.get('included_files', 0)} file(s), "
@@ -179,6 +187,12 @@ def _cmd_mine(args: argparse.Namespace) -> int:
             f"{usage.get('total_tokens', 0):,} tokens ({kind})"
             + (f", {usage['retries']} retried" if usage.get("retries") else "")
         )
+        budget = summary.get("budget", {})
+        if budget:
+            print(
+                f"Budget: {usage.get('attempts', 0)}/{budget.get('max_attempts', '?')} attempts, "
+                f"{usage.get('total_tokens', 0):,}/{budget.get('max_tokens', '?')} tokens"
+            )
     for note in summary.get("notes", [])[:5]:
         print(f"Note: {note}")
     print(f"Report: {result.get('report_path', '')}")
@@ -195,7 +209,7 @@ def _cmd_reindex(args: argparse.Namespace) -> int:
     return 0
 
 
-def _load_registry(root: Path) -> dict:
+def _load_registry(root: Path) -> dict[str, Any]:
     path = root / "registry.json"
     if not path.is_file():
         raise SystemExit(f"No registry at {path}. Run a mine or reindex first.")

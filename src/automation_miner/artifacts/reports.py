@@ -13,7 +13,9 @@ a run. The summary is the middle artifact: one compact row per opportunity.
 
 from __future__ import annotations
 
-from automation_miner.artifacts.briefs import title_slug
+from typing import Literal
+
+from automation_miner.artifacts.briefs import is_discovery_hypothesis, title_slug
 from automation_miner.schemas import (
     LAYER_ORDER,
     LAYER_TITLES,
@@ -23,6 +25,7 @@ from automation_miner.schemas import (
     Opportunity,
     PortfolioStats,
     RunSummary,
+    RunBudget,
     RunUsage,
     SummaryEntry,
     Tier,
@@ -66,16 +69,27 @@ def _ice_row(index: int, opp: Opportunity, with_tier: bool = True) -> str:
     )
 
 
-def _usage_lines(usage: RunUsage) -> list[str]:
-    if not usage.calls:
+def _usage_lines(usage: RunUsage, budget: RunBudget | None = None) -> list[str]:
+    if not usage.calls and not usage.attempts:
         return []
     exactness = "provider-reported" if usage.exact else "estimated"
     lines = [
         f"- **Model calls:** {usage.calls}"
         + (f" ({usage.retries} retried)" if usage.retries else ""),
+        f"- **Admission:** {usage.logical_calls} logical call(s), {usage.attempts} attempt(s)",
         f"- **Tokens ({exactness}):** {_tokens(usage.prompt_tokens)} in, "
         f"{_tokens(usage.completion_tokens)} out, {_tokens(usage.total_tokens)} total",
     ]
+    if usage.attempted_tokens:
+        lines.append(
+            f"- **Observed attempt tokens:** {_tokens(usage.attempted_tokens)} "
+            "(includes failed or conservatively bounded attempts)"
+        )
+    if budget is not None:
+        lines.append(
+            f"- **Run budget:** {budget.max_attempts} attempts, "
+            f"{_tokens(budget.max_tokens)} tokens, {budget.max_seconds:g}s wall clock"
+        )
     if usage.by_role:
         busiest = sorted(
             usage.by_role.items(), key=lambda kv: -kv[1].total_tokens
@@ -94,6 +108,10 @@ def _context_lines(context: ContextPacket) -> list[str]:
         + (f", {stats.skipped_files} skipped" if stats.skipped_files else ""),
         f"- **Evidence index:** {stats.chunks} chunks, {_tokens(stats.evidence_tokens)} tokens "
         f"({stats.budget_used_pct}% of a {_tokens(stats.budget_tokens)} budget)",
+        f"- **Input quality:** {context.input_quality.level} "
+        f"({context.input_quality.score}/100) — {context.input_quality.warning}",
+        f"- **Retained-evidence quality:** {context.retained_quality.level} "
+        f"({context.retained_quality.score}/100) — {context.retained_quality.warning}",
     ]
     if stats.source_chars:
         lines.append(
@@ -125,10 +143,10 @@ def _excluded_section(ranked: list[Opportunity]) -> list[str]:
         return []
     lines = [
         "",
-        "## Excluded by Constraint Policy",
+        "## Excluded from Published Portfolio",
         "",
         "These were fully drafted, critiqued and scored, then held back by the "
-        "constraints given for this run. They are retained in `scores.json` and "
+        "constraints or quality gates for this run. They are retained in `scores.json` and "
         "`summary.json`.",
         "",
         "| ID | Name | ICE | Reason |",
@@ -169,18 +187,23 @@ def render_report(
     stats: PortfolioStats,
     usage: RunUsage | None = None,
     models: dict[str, str] | None = None,
+    status: Literal["running", "completed", "failed", "budget_exhausted"] = "completed",
+    publication_status: Literal["pending", "complete"] = "complete",
+    budget: RunBudget | None = None,
 ) -> str:
     """Ranked ICE table with run metadata, portfolio shape, and exclusions."""
     usage = usage or RunUsage()
     live = published(ranked)
     date = run_id.split("_", 1)[0]
-    policy = parse_constraint_policy(context.constraints)
+    policy = parse_constraint_policy(context.raw_constraints, context.constraint_params)
 
     lines = [
         f"# Automation Mining Report — {context.domain}",
         "",
         f"> **Run:** `{run_id}`  ",
         f"> **Date:** {date}  ",
+        f"> **Status:** {status}  ",
+        f"> **Publication:** {publication_status}  ",
         f"> **Constraints:** {context.constraints or 'none'}  ",
         f"> **Opportunities:** {stats.published} published"
         + (f", {stats.filtered} filtered" if stats.filtered else ""),
@@ -206,7 +229,7 @@ def render_report(
         )
         lines.append(f"- **Layers covered:** {layers}")
     lines += _context_lines(context)
-    lines += _usage_lines(usage)
+    lines += _usage_lines(usage, budget)
     if models:
         lines.append(
             "- **Models:** "
@@ -280,6 +303,9 @@ def render_summary(
     duration_seconds: float,
     dry_run: bool,
     brief_paths: dict[str, str] | None = None,
+    status: Literal["running", "completed", "failed", "budget_exhausted"] = "completed",
+    publication_status: Literal["pending", "complete"] = "complete",
+    budget: RunBudget | None = None,
 ) -> RunSummary:
     """Compact, agent-facing view of a run — the payload MCP returns inline."""
     paths = brief_paths or {}
@@ -302,20 +328,32 @@ def render_summary(
             filters=active_filters(opp),
             problem=_first_sentence(opp.draft.problem),
             brief_path=paths.get(opp.am_id, ""),
+            artifact_type=(
+                "discovery_hypothesis"
+                if is_discovery_hypothesis(opp, context.input_quality)
+                else "opportunity_brief"
+            ),
         )
         for opp in ranked
     ]
-    policy = parse_constraint_policy(context.constraints)
+    policy = parse_constraint_policy(context.raw_constraints, context.constraint_params)
     return RunSummary(
         run_id=run_id,
         domain=context.domain,
         domain_slug=context.domain_slug,
         constraints=context.constraints,
+        raw_constraints=context.raw_constraints,
+        constraint_params=context.constraint_params,
         created=created,
         duration_seconds=duration_seconds,
         dry_run=dry_run,
+        status=status,
+        publication_status=publication_status,
+        budget=budget or RunBudget(),
         stats=stats,
         context=context.stats,
+        input_quality=context.input_quality,
+        retained_quality=context.retained_quality,
         usage=usage,
         opportunities=entries,
         notes=_run_notes(context, ranked, policy),
@@ -369,6 +407,8 @@ def render_run_md(
         f"> **Context provided:** {context.source_kind} input "
         f"({context.stats.included_files} files, {context.stats.chunks} evidence chunks, "
         f"{_tokens(context.stats.evidence_tokens)} tokens)",
+        f"> **Input quality:** {context.input_quality.level} "
+        f"({context.input_quality.score}/100) — {context.input_quality.warning}",
         f"> **Date:** {date}",
         "> **Engineer:** automation-miner engine",
         "",
@@ -463,7 +503,9 @@ def render_run_md(
             f"| {opp.am_id} | `{fname}` | {opp.ice} | {opp.tier.value} | {opp.status.value} |"
         )
 
-    notes = _run_notes(context, ranked, parse_constraint_policy(context.constraints))
+    notes = _run_notes(
+        context, ranked, parse_constraint_policy(context.raw_constraints, context.constraint_params)
+    )
     lines += [
         "",
         "---",
