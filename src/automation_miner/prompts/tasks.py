@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from automation_miner.prompts.fragments import SOURCE_SILENCE_GATE, untrusted
+from automation_miner.prompts.fragments import PRECISION_RULE, SOURCE_SILENCE_GATE, untrusted
 
 DOMAIN_MAP_OUTPUT_CONTRACT = """\
 Output contract: return one JSON object and no markdown, prose, or extra keys.
@@ -28,19 +28,6 @@ For narrative fields, state "unknown from supplied evidence" when necessary.
 Manual friction may contain only directly observed or explicitly stated friction.
 Do not include pain_points or any other fields.
 """
-
-PRECISION_RULE = """\
-Precision rule for observed facts:
-  - Apply each number only to the scope the evidence gives it. "9 minutes for
-    email and paper claims" is not "9 minutes for paper claims".
-  - A cause is observed only when the evidence states it. Otherwise phrase it
-    as a likely driver and record it in "assumptions".
-  - A system capability (an API, a field, a search key, a module) is observed
-    only when the evidence names it. Otherwise it is a requirement or a
-    validation question.
-  - Derived numbers (46% of 1,850 = ~850) are estimates: mark them with "~".
-"""
-
 
 def input_assessment_prompt(evidence: str, requested_mode: str = "auto") -> str:
     return (
@@ -170,7 +157,12 @@ CRITIQUE_TASK = (
     "knowledge, recorded assumptions, labeled estimates, the proposed design, "
     "or requirements.\n\n"
     "List readability defects in writing_issues, including any "
-    "meta-commentary about the evidence inside prose fields.\n\n"
+    "meta-commentary about the evidence inside prose fields. A derived "
+    "number missing its \"~\" is a writing issue, not a grounding violation.\n\n"
+    "Arithmetic rule: derivations listed as checked by code compute "
+    "correctly from their inputs. Do not re-derive them. Dispute one only "
+    "when an input is the wrong figure or is applied beyond its scope, and "
+    "name that input and the figure you would use instead.\n\n"
     "Mandatory constraint rule: if any proposed step, tool, dependency, "
     "data flow, or autonomous action conflicts with a hard constraint, "
     "feasibility must be at most 3.0 and the feedback must require removal "
@@ -179,15 +171,22 @@ CRITIQUE_TASK = (
 )
 
 
+def checked_block(verified: str) -> str:
+    """The derivations code verified, fenced for a critic or verifier prompt."""
+    return f"{untrusted('Arithmetic checked by code', verified)}\n\n" if verified else ""
+
+
 def critique_prompt(
-    draft_json: str, other_titles: list[str], evidence: str = "", constraints: str = ""
+    draft_json: str, other_titles: list[str], evidence: str = "", constraints: str = "",
+    verified: str = "",
 ) -> str:
     others = ", ".join(other_titles) or "none"
     hard = untrusted("Hard constraints the draft must satisfy", constraints or "none")
     return (
         f"{hard}\n\nOther opportunities in this run (for differentiation): {others}\n\n"
         f"Evidence available for groundedness checks:\n{evidence}\n\n"
-        f"{untrusted('Draft under review', draft_json)}\n\n{PRECISION_RULE}\n{CRITIQUE_TASK}"
+        f"{untrusted('Draft under review', draft_json)}\n\n{checked_block(verified)}"
+        f"{PRECISION_RULE}\n{CRITIQUE_TASK}"
     )
 
 
@@ -225,14 +224,17 @@ def repair_prompt(draft_json: str, defects: list[str], evidence: str, constraint
     )
 
 
-def verify_prompt(draft_json: str, defects: list[str], evidence: str, constraints: str) -> str:
+def verify_prompt(
+    draft_json: str, defects: list[str], evidence: str, constraints: str, verified: str = ""
+) -> str:
     listed = "\n".join(f"- {defect}" for defect in defects)
     return (
         f"{untrusted('Hard constraints', constraints or 'none')}\n\n"
         f"Evidence:\n{evidence}\n\n"
         f"{untrusted('Defects the repair had to fix', listed)}\n\n"
-        f"{untrusted('Repaired draft', draft_json)}\n\n"
-        "Produce the RepairVerdict JSON."
+        f"{untrusted('Repaired draft', draft_json)}\n\n{checked_block(verified)}"
+        "A defect that disputes arithmetic code verified is resolved when the "
+        "derivation's inputs are the right figures. Produce the RepairVerdict JSON."
     )
 
 

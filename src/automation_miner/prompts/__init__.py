@@ -45,6 +45,12 @@ capabilities from being stretched beyond what the evidence states.
 Version 4.2 reads free-text run constraints with a policy-reader role into
 typed flags, each backed by a verbatim quote that code verifies, instead of
 deciding binding filters with keyword patterns alone.
+
+Version 4.3 makes arithmetic code's job. Drafts record every derived number
+with its formula; code checks it, and the critic and verifier are told which
+derivations are verified, so they dispute inputs, not sums. A real run lost
+its best email-triage brief to a critic that computed a share of the wrong
+base and a repair that adopted the wrong number.
 """
 
 from __future__ import annotations
@@ -95,7 +101,7 @@ from automation_miner.prompts.tasks import (
     verify_prompt,
 )
 
-PROMPT_VERSION = "4.2"
+PROMPT_VERSION = "4.3"
 
 __all__ = [
     "PROMPT_VERSION",

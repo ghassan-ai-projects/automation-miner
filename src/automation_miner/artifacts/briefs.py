@@ -15,6 +15,7 @@ from automation_miner.artifacts.brief_sections import (
     evidence_section,
     numbered,
     scoring_section,
+    derived_figures,
     validation_criteria,
     validation_section,
     yaml_scalar,
@@ -56,7 +57,7 @@ _PROCESS = """## Impact Analysis
 | Dimension | Current State | Automated State | Improvement | Basis |
 |-----------|--------------|----------------|-------------|-------|
 {impact_rows}
-
+{derived}
 ## Process Details
 
 ### Inputs
@@ -159,7 +160,8 @@ def _process(opp: Opportunity) -> str:
         for r in d.impact_analysis
     ) or "| — | — | — | — | — |"
     return _PROCESS.format(
-        impact_rows=impact_rows, inputs=bullets(d.inputs), steps=numbered(d.steps),
+        impact_rows=impact_rows, derived=derived_figures(d), inputs=bullets(d.inputs),
+        steps=numbered(d.steps),
         outputs=bullets(d.outputs), hitl=bullets(d.hitl_points),
         requirements=bullets(d.technical_requirements), dependencies=bullets(d.dependencies),
         constraints=bullets(d.constraints),

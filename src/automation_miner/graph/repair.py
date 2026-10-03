@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from automation_miner.derivations import arithmetic_issues, check_derivations, verified_notes
 from automation_miner.hygiene import draft_hedges
 from automation_miner.prompts import (
     REPAIR_SYSTEM,
@@ -43,9 +44,13 @@ def _repair_once(
     repaired = repaired.model_copy(
         update={"layer": draft.layer, "addresses_pains": draft.addresses_pains}
     )
-    check = verify_prompt(repaired.model_dump_json(), defects, evidence, constraints)
+    checks = check_derivations(repaired)
+    check = verify_prompt(
+        repaired.model_dump_json(), defects, evidence, constraints, verified_notes(checks)
+    )
     verdict = model.call_json("critic", VERIFIER_SYSTEM, check, RepairVerdict)
-    return repaired, verdict, len(draft_hedges(repaired))
+    # A repair that breaks its own arithmetic is not clean, whatever the verifier says.
+    return repaired, verdict, len(draft_hedges(repaired)) + len(arithmetic_issues(checks))
 
 
 def repair_blocked_draft(

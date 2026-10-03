@@ -14,7 +14,8 @@ import json
 import re
 from collections.abc import Mapping
 
-from automation_miner.schemas import InputQuality, Opportunity
+from automation_miner.derivations import check_derivations
+from automation_miner.schemas import InputQuality, Opportunity, OpportunityDraft
 from automation_miner.scoring import active_filters
 
 FILTER_LABELS: dict[str, str] = {
@@ -146,3 +147,14 @@ def validation_criteria(opp: Opportunity) -> str:
         "- What did this analysis miss?",
     ]
     return "\n".join(criteria)
+
+
+def derived_figures(draft: OpportunityDraft) -> str:
+    """How each computed number was derived, with code's arithmetic verdict."""
+    lines = [
+        f"- {c.derivation.figure} = {c.derivation.formula}"
+        + (f" ({', '.join(c.derivation.evidence_refs)})" if c.derivation.evidence_refs else "")
+        + ("" if c.ok else " — *arithmetic does not match*")
+        for c in check_derivations(draft)
+    ]
+    return "\n**How the figures were derived:**\n\n" + "\n".join(lines) + "\n" if lines else ""

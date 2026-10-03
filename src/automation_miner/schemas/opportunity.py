@@ -57,6 +57,16 @@ class PaymentAction(ArtifactModel):
     human_approval_required: bool = True
 
 
+class Derivation(ArtifactModel):
+    """A number computed from evidence figures, with the arithmetic code checks."""
+
+    figure: str = Field(description='The number as written in the draft, e.g. "~392/week".')
+    formula: str = Field(
+        description="Arithmetic over evidence figures that yields it, e.g. '640 / 0.62 * 0.38'."
+    )
+    evidence_refs: list[str] = Field(default_factory=list)
+
+
 class OpportunityDraft(ArtifactModel):
     """A single automation opportunity draft (pre-scoring)."""
 
@@ -88,6 +98,10 @@ class OpportunityDraft(ArtifactModel):
     )
     addresses_pains: list[str] = Field(
         default_factory=list, description="Pain-ledger ids; set by code from the plan."
+    )
+    derivations: list[Derivation] = Field(
+        default_factory=list,
+        description="Every number computed from evidence figures, with its formula.",
     )
     external_data_channels: list[ExternalDataChannel] = Field(default_factory=list)
     payment_actions: list[PaymentAction] = Field(default_factory=list)

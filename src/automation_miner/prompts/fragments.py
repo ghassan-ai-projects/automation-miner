@@ -248,3 +248,19 @@ Agent topology:
   then validator", "supervisor with two workers". Prefer the smallest count that
   does the job; a single agent with tools beats a swarm.
 """
+
+
+PRECISION_RULE = """\
+Precision rule for observed facts:
+  - Apply each number only to the scope the evidence gives it. "9 minutes for
+    email and paper claims" is not "9 minutes for paper claims".
+  - A cause is observed only when the evidence states it. Otherwise phrase it
+    as a likely driver and record it in "assumptions".
+  - A system capability (an API, a field, a search key, a module) is observed
+    only when the evidence names it. Otherwise it is a requirement or a
+    validation question.
+  - Derived numbers (46% of 1,850 = ~850) are estimates: mark them with "~"
+    and record each in "derivations" with its formula over the evidence
+    figures (figure "~850/week", formula "1850 * 0.46"). Code checks the
+    arithmetic; never state a computed number you cannot write a formula for.
+"""

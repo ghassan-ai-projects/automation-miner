@@ -38,6 +38,7 @@ from automation_miner.schemas.analysis import (
     LayerAnalysis,
 )
 from automation_miner.schemas.opportunity import (
+    Derivation,
     RiskRow,
     ImpactRow,
     PhasePlan,
@@ -71,6 +72,7 @@ __all__ = [
     "CRITIQUE_THRESHOLD",
     "CRITIQUE_WEIGHTS",
     "CandidatePortfolio",
+    "Derivation",
     "Chunk",
     "ContextPacket",
     "PolicyClause",

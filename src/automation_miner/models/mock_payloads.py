@@ -199,6 +199,9 @@ _DRAFT_STATIC: dict[str, Any] = {
             "mitigation": "Quarterly rule review with the process owner",
         },
     ],
+    "derivations": [
+        {"figure": "5 hours/week", "formula": "20 * 15 / 60", "evidence_refs": []},
+    ],
     "agent_count": 1,
     "agent_topology": "single agent with a rule-checking tool",
     "effort": "medium",
