@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import TypeAlias
 
 from automation_miner import __version__
-from automation_miner.cli import commands
+from automation_miner.cli import commands, lifecycle
 
 
 def _workspace_arg(parser: argparse.ArgumentParser) -> None:
@@ -112,6 +112,7 @@ def _build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
     for add in (_add_mine, _add_run_views, _add_list, _add_evaluation):
         add(sub)
+    lifecycle.add_lifecycle(sub, _workspace_arg, _json_arg)
     return parser
 
 
@@ -127,6 +128,9 @@ def main(argv: list[str] | None = None) -> int:
         "summary": commands.cmd_summary,
         "evaluate": commands.cmd_evaluate,
         "readers": commands.cmd_readers,
+        "status": lifecycle.cmd_status,
+        "outcome": lifecycle.cmd_outcome,
+        "outcomes": lifecycle.cmd_outcomes,
     }
     try:
         return handlers[args.command](args)

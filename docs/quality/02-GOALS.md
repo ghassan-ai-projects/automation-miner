@@ -36,7 +36,7 @@ green `make ci-check` on the same commit.
 | 5 | Suite covers large inputs and the original DHL input | ✅ |
 | 6 | Unicode tokenizer and German retrieval vocabulary | ✅ |
 | 7 | Prior-idea memory across differently named runs of one domain | ✅ |
-| 8 | Lifecycle commands (status / measured outcome) | ⬜ |
+| 8 | Lifecycle commands (status / measured outcome) | ✅ |
 | 9 | Readers free of per-parse instance state | ✅ |
 | 10 | Long functions split (see E2) | ✅ |
 | 11 | Judge variance: 2 samples per brief | ✅ |

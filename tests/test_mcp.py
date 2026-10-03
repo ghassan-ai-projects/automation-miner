@@ -33,6 +33,9 @@ def test_all_tools_have_schemas() -> None:
         "list_readers",
         "reindex",
         "server_info",
+        "set_opportunity_status",
+        "record_opportunity_outcome",
+        "list_outcomes",
     }
 
 

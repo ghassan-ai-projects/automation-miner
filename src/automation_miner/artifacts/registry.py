@@ -19,6 +19,7 @@ from automation_miner.schemas import OppStatus, Tier
 LAYERS = ("document", "communication", "decision", "monitoring", "knowledge")
 ICE_RANGES = ("vision_80plus", "high_60_79", "medium_40_59", "low_under_40")
 STATUSES = tuple(status.value for status in OppStatus)
+VERDICTS = ("met", "partial", "missed")
 STATUS_ALIASES = {
     "validating": OppStatus.EVALUATING.value,
     "building": OppStatus.IMPLEMENTING.value,
@@ -99,6 +100,8 @@ def _entry(path: Path, meta: dict[str, Any], am_id: str, slug: str) -> dict[str,
         value = _int(meta.get(key))
         if value is not None:
             entry[short] = value
+    if meta.get("outcome") in VERDICTS:
+        entry["ov"] = meta["outcome"]
     return entry
 
 
@@ -185,6 +188,7 @@ def _stats(
         "bot_ice": bottom.get("ice", 0),
         "layers": {k: len(v) for k, v in idx["by_layer"].items()},
         "statuses": {k: len(v) for k, v in idx["by_status"].items()},
+        "outcomes": {v: sum(1 for e in entries if e.get("ov") == v) for v in VERDICTS},
     }
 
 

@@ -104,6 +104,22 @@ uv run automation-miner summary 2026-07-22_my-domain
 uv run automation-miner evaluate 2026-07-22_my-domain   # grade a run (see below)
 ```
 
+After publication, track what happens to each brief. Status moves through
+identified → evaluating → designing → implementing → live (or deprecated), and
+each measured result is recorded against one of the brief's numbered success
+measures:
+
+```bash
+uv run automation-miner status AM-001 evaluating --note "2-week pilot agreed"
+uv run automation-miner outcome AM-001 1 "4 min per claim" --baseline "9 min" --verdict met
+uv run automation-miner outcomes        # every result next to the ICE it was published at
+```
+
+Events are appended to `lifecycle.json`; the brief's frontmatter carries the
+current status and latest verdict, and a Lifecycle section shows the history.
+`outcomes` groups verdicts by tier, which tells you whether high-ICE ideas
+actually deliver more often than low ones.
+
 ## Document formats
 
 ```bash
@@ -189,7 +205,9 @@ Agent config snippet:
 
 Tools: `mine_domain`, `list_runs`, `list_domains`, `get_opportunity`,
 `query_registry`, `get_run_report`, `get_run_summary`, `list_readers`, `reindex`,
-`get_run_manifest`, `get_run_error`, `evaluate_run`, `server_info`.
+`get_run_manifest`, `get_run_error`, `evaluate_run`, `server_info`, and the
+lifecycle tools `set_opportunity_status`, `record_opportunity_outcome`,
+`list_outcomes`.
 
 `mine_domain` returns the run summary inline — per-opportunity ICE, tier, strategic
 filters, eligibility, and token usage — so a driving agent does not have to parse
@@ -205,6 +223,7 @@ got there). Results are a single source of truth: `opportunities.json`.
 ├── .am-ids.sqlite3                # transactional AM-ID allocation watermark
 ├── .cache/digests/                # content-hashed KB digests (re-runs are free)
 ├── registry.json                  # machine index across runs (rebuilt by reindex)
+├── lifecycle.json                 # append-only status changes and measured outcomes
 ├── runs/
 │   └── YYYY-MM-DD_<domain-slug>/
 │       ├── run.json               # manifest: status, input, models, budget, usage, timings

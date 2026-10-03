@@ -105,8 +105,9 @@ _FOOTER = """---
 
 ## Self-Improvement
 
-Lifecycle: identified → evaluating → designing → implementing → live → measured
-(update `status` in the frontmatter as it moves).
+Lifecycle: identified → evaluating → designing → implementing → live.
+Move it with `automation-miner status {am_id} <status>`; record each measured
+result with `automation-miner outcome {am_id} <measure #> <value>`.
 
 Success measures:
 {criteria}
@@ -202,6 +203,6 @@ def render_brief(
         _plan(opp),
         f"{late}## Scoring & Confidence\n\n{scoring_section(opp)}\n",
         f"## Evidence\n\n{evidence_section(opp, run_id, evidence_labels)}\n",
-        _FOOTER.format(criteria=validation_criteria(opp)),
+        _FOOTER.format(criteria=validation_criteria(opp), am_id=opp.am_id),
     ]
     return "\n".join(parts)

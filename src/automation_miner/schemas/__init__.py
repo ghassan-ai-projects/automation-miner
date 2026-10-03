@@ -55,6 +55,7 @@ from automation_miner.schemas.opportunity import (
     CRITIQUE_THRESHOLD,
     PUBLICATION_QUALITY_FLOOR,
 )
+from automation_miner.schemas.lifecycle import LifecycleEvent, LifecycleLedger, Verdict
 from automation_miner.schemas.run import (
     RoleUsage,
     RunUsage,
@@ -88,6 +89,8 @@ __all__ = [
     "LAYER_TITLES",
     "Layer",
     "LayerAnalysis",
+    "LifecycleEvent",
+    "LifecycleLedger",
     "Level",
     "OppStatus",
     "Opportunity",
@@ -113,4 +116,5 @@ __all__ = [
     "StakeholderProcess",
     "SummaryEntry",
     "Tier",
+    "Verdict",
 ]

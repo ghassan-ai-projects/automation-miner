@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from automation_miner.mcp.lifecycle import LIFECYCLE_DESCRIPTIONS, LIFECYCLE_SCHEMAS
+
 INPUT_TYPES = ("auto", "idea", "file", "kb")
 
 TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
@@ -92,6 +94,7 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
     "list_readers": {"type": "object", "properties": {}},
     "reindex": {"type": "object", "properties": {}},
     "server_info": {"type": "object", "properties": {}},
+    **LIFECYCLE_SCHEMAS,
 }
 
 TOOL_DESCRIPTIONS = {
@@ -122,4 +125,5 @@ TOOL_DESCRIPTIONS = {
     ),
     "reindex": "Rebuild registry.json from the opps/ tree.",
     "server_info": "Server version, active model routing, workspace path.",
+    **LIFECYCLE_DESCRIPTIONS,
 }

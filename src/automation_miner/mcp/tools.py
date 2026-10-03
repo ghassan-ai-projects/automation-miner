@@ -14,9 +14,9 @@ from automation_miner.artifacts.registry import reindex
 from automation_miner.artifacts.workspace import Workspace, read_json
 from automation_miner.mcp.catalog import TOOL_DESCRIPTIONS, TOOL_SCHEMAS
 from automation_miner.mcp.errors import MCPError, MCPErrorCode, MCPResponse
+from automation_miner.mcp.lifecycle import LIFECYCLE_HANDLERS
 from automation_miner.mcp.mine import mine_domain
 from automation_miner.models.config import load_config
-
 
 
 def _list_runs(root: Path, args: dict[str, Any]) -> dict[str, Any]:
@@ -196,6 +196,7 @@ HANDLERS = {
     "list_readers": _list_readers,
     "reindex": _reindex,
     "server_info": _server_info,
+    **LIFECYCLE_HANDLERS,
 }
 
 def dispatch(tool: str, args: dict[str, Any], workspace: Path) -> MCPResponse:
