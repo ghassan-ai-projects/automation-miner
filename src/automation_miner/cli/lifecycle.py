@@ -1,4 +1,4 @@
-"""CLI handlers for the post-publication lifecycle: status, outcome, outcomes."""
+"""CLI handlers for what happens after a run: one-pager export, status, outcomes."""
 
 from __future__ import annotations
 
@@ -63,6 +63,17 @@ def cmd_outcomes(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_export(args: argparse.Namespace) -> int:
+    from automation_miner.artifacts.export import export_one_pager
+    from automation_miner.artifacts.workspace import Workspace
+
+    root = _root(args)
+    run_dir = Workspace(root).run_summary_path(args.run_id).parent
+    path = export_one_pager(run_dir, root, args.out, args.top)
+    print(f"One-pager: {path}")
+    return 0
+
+
 def add_lifecycle(sub: Any, workspace_arg: Any, json_arg: Any) -> None:
     status = sub.add_parser("status", help="Move a published brief to a lifecycle status.")
     status.add_argument("am_id", help="Opportunity id, e.g. AM-001.")
@@ -82,3 +93,8 @@ def add_lifecycle(sub: Any, workspace_arg: Any, json_arg: Any) -> None:
     outcomes = sub.add_parser("outcomes", help="List measured outcomes with their ICE scores.")
     json_arg(outcomes)
     workspace_arg(outcomes)
+    export = sub.add_parser("export", help="Write a run's stakeholder one-pager (HTML).")
+    export.add_argument("run_id", help="Run directory name.")
+    export.add_argument("--out", type=Path, help="Output file. Default: <run>/one-pager.html.")
+    export.add_argument("--top", type=int, default=5, help="Opportunities shown in detail.")
+    workspace_arg(export)

@@ -131,6 +131,7 @@ def main(argv: list[str] | None = None) -> int:
         "status": lifecycle.cmd_status,
         "outcome": lifecycle.cmd_outcome,
         "outcomes": lifecycle.cmd_outcomes,
+        "export": lifecycle.cmd_export,
     }
     try:
         return handlers[args.command](args)

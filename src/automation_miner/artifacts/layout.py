@@ -56,6 +56,10 @@ class RunLayout:
         return self.root / "report.md"
 
     @property
+    def one_pager(self) -> Path:
+        return self.root / "one-pager.html"
+
+    @property
     def evaluation(self) -> Path:
         return self.root / "evaluation.json"
 

@@ -36,6 +36,7 @@ def test_all_tools_have_schemas() -> None:
         "set_opportunity_status",
         "record_opportunity_outcome",
         "list_outcomes",
+        "export_one_pager",
     }
 
 

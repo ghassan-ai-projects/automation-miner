@@ -41,7 +41,7 @@ green `make ci-check` on the same commit.
 | 10 | Long functions split (see E2) | ✅ |
 | 11 | Judge variance: 2 samples per brief | ✅ |
 | 12 | Remove `type: ignore` in ingest | ✅ |
-| 13 | Stakeholder export (HTML one-pager) | ⬜ |
+| 13 | Stakeholder export (HTML one-pager) | ✅ |
 | 14 | Readable report title for KB input | ✅ |
 
 ### Blocker

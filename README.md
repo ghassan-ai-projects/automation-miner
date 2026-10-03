@@ -102,7 +102,13 @@ uv run automation-miner list --tier high --min-ice 60
 uv run automation-miner show AM-001
 uv run automation-miner summary 2026-07-22_my-domain
 uv run automation-miner evaluate 2026-07-22_my-domain   # grade a run (see below)
+uv run automation-miner export 2026-07-22_my-domain     # stakeholder one-pager (HTML)
 ```
+
+`export` writes `one-pager.html` into the run: one self-contained page (no
+scripts, no external requests, all text escaped) with the recommended
+opportunities, their first step, expected impact, success measures, main
+risks, and current lifecycle status, ready to open, print, or forward.
 
 After publication, track what happens to each brief. Status moves through
 identified → evaluating → designing → implementing → live (or deprecated), and
@@ -206,8 +212,8 @@ Agent config snippet:
 Tools: `mine_domain`, `list_runs`, `list_domains`, `get_opportunity`,
 `query_registry`, `get_run_report`, `get_run_summary`, `list_readers`, `reindex`,
 `get_run_manifest`, `get_run_error`, `evaluate_run`, `server_info`, and the
-lifecycle tools `set_opportunity_status`, `record_opportunity_outcome`,
-`list_outcomes`.
+lifecycle tools `export_one_pager`, `set_opportunity_status`,
+`record_opportunity_outcome`, `list_outcomes`.
 
 `mine_domain` returns the run summary inline — per-opportunity ICE, tier, strategic
 filters, eligibility, and token usage — so a driving agent does not have to parse
@@ -230,6 +236,7 @@ got there). Results are a single source of truth: `opportunities.json`.
 │       ├── opportunities.json     # THE result: every opportunity, score, eligibility, reasons
 │       ├── summary.json           # compact agent-facing view
 │       ├── report.md              # at-a-glance decisions, pain coverage, ranking, exclusions
+│       ├── one-pager.html         # optional: `automation-miner export` for stakeholders
 │       ├── evaluation.{json,md}   # optional: `automation-miner evaluate`
 │       ├── error.json             # only on failure: stage + diagnosis
 │       ├── publication/           # staged briefs + crash-recovery journal
