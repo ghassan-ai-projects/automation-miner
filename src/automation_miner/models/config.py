@@ -101,6 +101,8 @@ class RoleRoute:
     reasoning_max_tokens: int = 0
     # Provider routing preferences passed through as OpenRouter's ``provider``.
     routing: tuple[tuple[str, Any], ...] = ()
+    # Most requests in flight at once to this provider across the process; 0 = no cap.
+    max_concurrent: int = 0
 
 
 @dataclass
@@ -171,6 +173,7 @@ class MinerConfig:
             stream=bool(entry.get("stream", pconf.get("stream", False))),
             reasoning_max_tokens=max(0, _as_int(entry.get("reasoning_max_tokens"), default_cap)),
             routing=tuple(sorted(dict(pconf.get("routing", {})).items())),
+            max_concurrent=max(0, _as_int(pconf.get("max_concurrent"), 0)),
         )
 
     def routing_table(self, dry_run: bool = False) -> dict[str, str]:

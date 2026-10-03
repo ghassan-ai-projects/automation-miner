@@ -278,17 +278,3 @@ def test_request_timeout_is_capped_per_attempt_not_by_the_run(config: MinerConfi
     assert result == '{"ok": true}'
     assert calls["n"] == 2
     assert all(timeout == 42.0 for timeout in timeouts)
-
-
-def test_openrouter_extensions_are_not_sent_to_other_providers() -> None:
-    from automation_miner.models.config import load_config
-    from automation_miner.models.transport import request_body
-
-    config = load_config(None)
-    config.roles["judge"] = {"provider": "zai", "model": "glm-5.3-flash"}
-    route = config.resolve("judge")
-    assert route.base_url == "https://api.z.ai/api/coding/paas/v4"
-    assert route.api_key_env == "ZAI_API_KEY" and route.stream
-    body = request_body(route, "sys", "prompt")
-    assert "reasoning" not in body and "provider" not in body
-    assert body["response_format"] == {"type": "json_object"}

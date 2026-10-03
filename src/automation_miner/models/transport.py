@@ -7,6 +7,9 @@
 * **Every attempt is admitted and settled.** Each attempt reserves its worst
   case (prompt + ``max_tokens``) against the run budget before it is sent and
   settles at observed usage afterwards; a failed attempt is charged in full.
+* **A provider's concurrency cap is shared.** ``max_concurrent`` bounds the
+  requests in flight to one provider across every thread in the process, so
+  parallel cases and workers cannot trip a plan's rate limit together.
 * **One stalled request cannot hold the run.** Each request times out after
   ``retry.request_seconds`` (bounded by the run's remaining wall clock) and is
   retried like any other transient failure.
@@ -16,7 +19,9 @@ from __future__ import annotations
 
 import os
 import random
+import threading
 import time
+from contextlib import AbstractContextManager, nullcontext
 from typing import TYPE_CHECKING, Any, Callable
 
 import httpx
@@ -47,6 +52,20 @@ def retry_delay(policy: RetryPolicy, attempt: int, response: httpx.Response | No
     if policy.jitter:
         delay *= 1 + random.uniform(0, policy.jitter)
     return delay
+
+
+_GATES: dict[str, threading.BoundedSemaphore] = {}
+_GATES_LOCK = threading.Lock()
+
+
+def provider_gate(route: RoleRoute) -> AbstractContextManager[Any]:
+    """A process-wide slot for one request to ``route``'s provider (no-op when uncapped)."""
+    if route.max_concurrent <= 0:
+        return nullcontext()
+    key = f"{route.provider}@{route.base_url}"
+    with _GATES_LOCK:
+        gate = _GATES.setdefault(key, threading.BoundedSemaphore(route.max_concurrent))
+    return gate
 
 
 def request_body(route: RoleRoute, system: str, prompt: str) -> dict[str, Any]:
@@ -132,7 +151,8 @@ class ChatTransport:
         final = attempt == self.policy.attempts
         self.admission = None
         try:
-            content, usage = self._exchange(body, api_key, self._admit(estimate))
+            with provider_gate(self.route):
+                content, usage = self._exchange(body, api_key, self._admit(estimate))
         except httpx.HTTPStatusError as exc:
             self._on_status_error(exc, self.admission, attempt, final)
             return None
