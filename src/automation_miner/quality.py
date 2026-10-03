@@ -19,6 +19,27 @@ _SIGNALS: tuple[tuple[str, str], ...] = (
 )
 
 
+_WARNINGS = {
+    "moderate": (
+        "Input contains some operational signals but may leave important "
+        "baselines or controls unknown. Validate claims before implementation."
+    ),
+    "rich": "Input contains multiple operational signals; verify cited claims and baselines.",
+}
+
+
+def _score(source_kind: str, signals: int, source_chars: int) -> int:
+    score = signals * 12 + 10 * (source_chars >= 1_000) + 10 * (source_chars >= 5_000)
+    score += 10 if source_kind == "kb" else 0
+    return min(100, min(score, 30) if source_kind == "idea" else score)
+
+
+def _level(signals: int, score: int) -> Literal["thin", "moderate", "rich"]:
+    if signals >= 5 and score >= 60:
+        return "rich"
+    return "moderate" if signals >= 2 and score >= 30 else "thin"
+
+
 def profile_input_quality(
     source_kind: str, chunks: Iterable[Chunk], source_chars: int
 ) -> InputQuality:
@@ -26,43 +47,10 @@ def profile_input_quality(
     material = "\n".join(chunk.text for chunk in chunks).casefold()
     signals = [name for name, pattern in _SIGNALS if re.search(pattern, material)]
     missing = [name for name, _ in _SIGNALS if name not in signals]
-
-    score = len(signals) * 12
-    if source_chars >= 1_000:
-        score += 10
-    if source_chars >= 5_000:
-        score += 10
-    if source_kind == "kb":
-        score += 10
-    if source_kind == "idea":
-        score = min(score, 30)
-    score = min(100, score)
-
-    if len(signals) >= 5 and score >= 60:
-        level: Literal["thin", "moderate", "rich"] = "rich"
-    elif len(signals) >= 2 and score >= 30:
-        level = "moderate"
-    else:
-        level = "thin"
-
-    if level == "thin":
-        missing_text = ", ".join(missing[:4]) or "operational detail"
-        warning = (
-            "Input is thin process evidence; expect discovery hypotheses rather "
-            f"than implementation-ready briefs. Add {missing_text}."
-        )
-    elif level == "moderate":
-        warning = (
-            "Input contains some operational signals but may leave important "
-            "baselines or controls unknown. Validate claims before implementation."
-        )
-    else:
-        warning = "Input contains multiple operational signals; verify cited claims and baselines."
-
-    return InputQuality(
-        level=level,
-        score=score,
-        signals=signals,
-        missing=missing,
-        warning=warning,
+    score = _score(source_kind, len(signals), source_chars)
+    level = _level(len(signals), score)
+    warning = _WARNINGS.get(level) or (
+        "Input is thin process evidence; expect discovery hypotheses rather than "
+        f"implementation-ready briefs. Add {', '.join(missing[:4]) or 'operational detail'}."
     )
+    return InputQuality(level=level, score=score, signals=signals, missing=missing, warning=warning)

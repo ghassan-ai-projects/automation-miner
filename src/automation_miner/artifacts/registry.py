@@ -19,7 +19,10 @@ from automation_miner.schemas import OppStatus, Tier
 LAYERS = ("document", "communication", "decision", "monitoring", "knowledge")
 ICE_RANGES = ("vision_80plus", "high_60_79", "medium_40_59", "low_under_40")
 STATUSES = tuple(status.value for status in OppStatus)
-STATUS_ALIASES = {"validating": OppStatus.EVALUATING.value, "building": OppStatus.IMPLEMENTING.value}
+STATUS_ALIASES = {
+    "validating": OppStatus.EVALUATING.value,
+    "building": OppStatus.IMPLEMENTING.value,
+}
 _BRIEF_ID_RE = re.compile(r"^(AM-\d+)-")
 _AM_ID_RE = re.compile(r"AM-\d+")
 _RUN_ID_RE = re.compile(r"\d{4}-\d{2}-\d{2}_[a-z0-9]+(?:-[a-z0-9]+)*")
@@ -46,152 +49,156 @@ def _int(value: Any) -> int | None:
         return None
 
 
-def build_registry(base: Path) -> dict[str, Any]:
-    """Build the registry dict from a workspace root."""
-    opps_dir = base / "opps"
+def _brief_id(path: Path, meta: dict[str, Any]) -> str | None:
+    """The brief's AM-id when frontmatter and filename agree, else None."""
+    match = _BRIEF_ID_RE.match(path.name)
+    am_id = str(meta.get("am-id", "")).upper()
+    if not _AM_ID_RE.fullmatch(am_id) or am_id != (match.group(1) if match else ""):
+        return None
+    return am_id
+
+
+def _publication_problem(base: Path, source: object, am_id: str) -> str:
+    """Why the brief's source run does not vouch for it ("" when it does)."""
+    if not isinstance(source, str) or not _RUN_ID_RE.fullmatch(source):
+        return "missing or invalid source run"
+    try:
+        manifest = json.loads((base / "runs" / source / "run.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        manifest = None
+    manifest = manifest if isinstance(manifest, dict) else {}
+    status = manifest.get("status")
+    publication = manifest.get("publication_status")
+    listed = manifest.get("opportunities", [])
+    if (
+        status == "completed"
+        and publication == "complete"
+        and isinstance(listed, list)
+        and (am_id in listed)
+    ):
+        return ""
+    detail = f" / publication {publication or 'unreadable'}" if status == "completed" else ""
+    return f"source run {source} is {status or 'unreadable'}{detail}"
+
+
+def _entry(path: Path, meta: dict[str, Any], am_id: str, slug: str) -> dict[str, Any]:
+    ice = _int(meta.get("ice-score")) or 0
+    entry: dict[str, Any] = {
+        "i": am_id,
+        "t": str(meta.get("title", path.stem)),
+        "l": str(meta.get("layer", "unknown")),
+        "ice": ice,
+        # Derived rather than trusted: a brief edited by hand can carry a tier
+        # that no longer matches its score.
+        "tr": Tier.for_ice(ice).value,
+        "d": slug,
+        "s": _status(meta.get("status")),
+        "f": str(path),
+    }
+    for key, short in (("impact", "im"), ("confidence", "co"), ("ease", "ea")):
+        value = _int(meta.get(key))
+        if value is not None:
+            entry[short] = value
+    return entry
+
+
+def _scan(base: Path) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
+    """Every published brief whose source run vouches for it, plus warnings."""
     entries: list[dict[str, Any]] = []
-    domains: dict[str, dict[str, Any]] = {}
     warnings: list[dict[str, str]] = []
-    seen_ids: set[str] = set()
+    seen: set[str] = set()
+    opps_dir = base / "opps"
+    domain_dirs = sorted(p for p in opps_dir.iterdir() if p.is_dir()) if opps_dir.exists() else []
+    for domain_dir in domain_dirs:
+        for path in sorted(domain_dir.glob("AM-*.md")):
+            meta = parse_frontmatter(path.read_text(encoding="utf-8"))
+            am_id = _brief_id(path, meta)
+            problem = (
+                "frontmatter am-id is missing or mismatched"
+                if am_id is None
+                else _publication_problem(base, meta.get("source"), am_id)
+                or (f"duplicate opportunity id {am_id}" if am_id in seen else "")
+            )
+            if problem or am_id is None:
+                warnings.append({"file": str(path), "reason": problem})
+                continue
+            seen.add(am_id)
+            entries.append(_entry(path, meta, am_id, domain_dir.name))
+    return entries, warnings
 
-    if opps_dir.exists():
-        for domain_dir in sorted(p for p in opps_dir.iterdir() if p.is_dir()):
-            slug = domain_dir.name
-            domain_entries: list[dict[str, Any]] = []
-            for f in sorted(domain_dir.glob("AM-*.md")):
-                meta = parse_frontmatter(f.read_text(encoding="utf-8"))
-                filename_match = _BRIEF_ID_RE.match(f.name)
-                filename_id = filename_match.group(1) if filename_match else ""
-                am_id = str(meta.get("am-id", "")).upper()
-                if not _AM_ID_RE.fullmatch(am_id) or am_id != filename_id:
-                    warnings.append(
-                        {"file": str(f), "reason": "frontmatter am-id is missing or mismatched"}
-                    )
-                    continue
-                source_value = meta.get("source")
-                if not isinstance(source_value, str) or not _RUN_ID_RE.fullmatch(source_value):
-                    warnings.append({"file": str(f), "reason": "missing or invalid source run"})
-                    continue
-                source_run = source_value
-                manifest_path = base / "runs" / source_run / "run.json"
-                try:
-                    run_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-                except (OSError, ValueError):
-                    run_manifest = None
-                run_status = (
-                    run_manifest.get("status") if isinstance(run_manifest, dict) else None
-                )
-                publication_status = (
-                    run_manifest.get("publication_status")
-                    if isinstance(run_manifest, dict)
-                    else None
-                )
-                opportunities = (
-                    run_manifest.get("opportunities", [])
-                    if isinstance(run_manifest, dict)
-                    else []
-                )
-                if (
-                    run_status != "completed"
-                    or publication_status != "complete"
-                    or not isinstance(opportunities, list)
-                    or am_id not in opportunities
-                ):
-                    warnings.append(
-                        {
-                            "file": str(f),
-                            "reason": (
-                                f"source run {source_run} is {run_status or 'unreadable'}"
-                                + (
-                                    f" / publication {publication_status or 'unreadable'}"
-                                    if run_status == "completed"
-                                    else ""
-                                )
-                            ),
-                        }
-                    )
-                    continue
-                if am_id in seen_ids:
-                    warnings.append({"file": str(f), "reason": f"duplicate opportunity id {am_id}"})
-                    continue
-                seen_ids.add(am_id)
-                ice = _int(meta.get("ice-score")) or 0
-                entry: dict[str, Any] = {
-                    "i": am_id,
-                    "t": str(meta.get("title", f.stem)),
-                    "l": str(meta.get("layer", "unknown")),
-                    "ice": ice,
-                    # Derived rather than trusted: a brief edited by hand can carry a
-                    # tier that no longer matches its score.
-                    "tr": Tier.for_ice(ice).value,
-                    "d": slug,
-                    "s": _status(meta.get("status")),
-                    "f": str(f),
-                }
-                for key, short in (("impact", "im"), ("confidence", "co"), ("ease", "ea")):
-                    v = _int(meta.get(key))
-                    if v is not None:
-                        entry[short] = v
-                entries.append(entry)
-                domain_entries.append(entry)
 
-            if domain_entries:
-                top = max(domain_entries, key=lambda e: e["ice"])
-                domains[slug] = {
-                    "id": slug,
-                    "title": slug.replace("-", " ").title(),
-                    "slug": slug,
-                    "total": len(domain_entries),
-                    "top_ice": top["ice"],
-                    "top_opp": top["i"],
-                }
+def _domains(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    by_slug: dict[str, list[dict[str, Any]]] = {}
+    for entry in entries:
+        by_slug.setdefault(entry["d"], []).append(entry)
+    domains = []
+    for slug, members in sorted(by_slug.items()):
+        top = max(members, key=lambda e: e["ice"])
+        domains.append(
+            {
+                "id": slug,
+                "title": slug.replace("-", " ").title(),
+                "slug": slug,
+                "total": len(members),
+                "top_ice": top["ice"],
+                "top_opp": top["i"],
+            }
+        )
+    return domains
 
+
+def _ice_range(ice: int) -> str:
+    if ice >= 80:
+        return "vision_80plus"
+    if ice >= 60:
+        return "high_60_79"
+    return "medium_40_59" if ice >= 40 else "low_under_40"
+
+
+def _indices(entries: list[dict[str, Any]]) -> dict[str, dict[str, list[str]]]:
     by_layer: dict[str, list[str]] = {layer: [] for layer in LAYERS}
     by_ice_range: dict[str, list[str]] = {r: [] for r in ICE_RANGES}
     by_status: dict[str, list[str]] = {s: [] for s in STATUSES}
+    for entry in entries:
+        if entry["l"] in by_layer:
+            by_layer[entry["l"]].append(entry["i"])
+        by_ice_range[_ice_range(entry["ice"])].append(entry["i"])
+        by_status[entry["s"] if entry["s"] in by_status else "identified"].append(entry["i"])
+    return {"by_layer": by_layer, "by_ice_range": by_ice_range, "by_status": by_status}
 
-    for e in entries:
-        if e["l"] in by_layer:
-            by_layer[e["l"]].append(e["i"])
-        ice = e["ice"]
-        if ice >= 80:
-            by_ice_range["vision_80plus"].append(e["i"])
-        elif ice >= 60:
-            by_ice_range["high_60_79"].append(e["i"])
-        elif ice >= 40:
-            by_ice_range["medium_40_59"].append(e["i"])
-        else:
-            by_ice_range["low_under_40"].append(e["i"])
-        by_status[e["s"] if e["s"] in by_status else "identified"].append(e["i"])
 
+def _stats(
+    base: Path, entries: list[dict[str, Any]], domains: int, idx: dict[str, Any]
+) -> dict[str, Any]:
     ices = [e["ice"] for e in entries]
     top = max(entries, key=lambda e: e["ice"]) if entries else {}
     bottom = min(entries, key=lambda e: e["ice"]) if entries else {}
-
     runs_dir = base / "runs"
-    run_count = (
-        sum(1 for path in runs_dir.iterdir() if path.is_dir()) if runs_dir.is_dir() else 0
-    )
+    return {
+        "runs": sum(1 for p in runs_dir.iterdir() if p.is_dir()) if runs_dir.is_dir() else 0,
+        "domains": domains,
+        "opps": len(entries),
+        "avg_ice": round(sum(ices) / len(ices), 1) if ices else 0,
+        "top_ice": top.get("ice", 0),
+        "top_id": top.get("i", ""),
+        "top_title": top.get("t", ""),
+        "bot_ice": bottom.get("ice", 0),
+        "layers": {k: len(v) for k, v in idx["by_layer"].items()},
+        "statuses": {k: len(v) for k, v in idx["by_status"].items()},
+    }
 
+
+def build_registry(base: Path) -> dict[str, Any]:
+    """Build the registry dict from a workspace root."""
+    entries, warnings = _scan(base)
+    domains = _domains(entries)
+    indices = _indices(entries)
     return {
         "v": 2,
         "ts": f"{datetime.now():%Y-%m-%dT%H:%M:%S}",
-        "stats": {
-            "runs": run_count,
-            "domains": len(domains),
-            "opps": len(entries),
-            "avg_ice": round(sum(ices) / len(ices), 1) if ices else 0,
-            "top_ice": top.get("ice", 0),
-            "top_id": top.get("i", ""),
-            "top_title": top.get("t", ""),
-            "bot_ice": bottom.get("ice", 0),
-            "layers": {k: len(v) for k, v in by_layer.items()},
-            "statuses": {k: len(v) for k, v in by_status.items()},
-        },
-        "domains": sorted(domains.values(), key=lambda d: d["id"]),
-        "by_layer": by_layer,
-        "by_ice_range": by_ice_range,
-        "by_status": by_status,
+        "stats": _stats(base, entries, len(domains), indices),
+        "domains": domains,
+        **indices,
         "entries": sorted(entries, key=lambda e: e["ice"], reverse=True),
         "warnings": warnings,
     }

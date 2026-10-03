@@ -123,4 +123,17 @@ critique = 2
 def test_dry_run_still_carries_role_sampling_defaults() -> None:
     route = load_config(None).resolve("drafter", dry_run=True)
     assert route.provider == "mock"
-    assert route.max_tokens == 16_000
+    assert route.max_tokens == 24_000
+
+
+def test_default_routes_use_only_the_cheap_flash_model() -> None:
+    config = load_config(None)
+    for role in ("mapper", "layer_analyst", "drafter", "critic", "refiner", "scorer", "judge"):
+        assert config.resolve(role).model == "deepseek/deepseek-v4-flash", role
+
+
+def test_reasoning_roles_have_room_to_think_before_answering() -> None:
+    """A 4k critic limit returned empty content four times and failed a real run."""
+    config = load_config(None)
+    for role in ("critic", "scorer", "mapper", "judge"):
+        assert config.resolve(role).max_tokens >= 16_000, role

@@ -158,15 +158,15 @@ def test_per_role_sampling_settings_reach_the_request(config: MinerConfig) -> No
 
     model = _model(config, handler)
     model.chat("drafter", "sys", "prompt")
-    # The drafter emits a full draft with two tables; one global 8192 cap
-    # truncated it into unparseable JSON.
-    assert captured["max_tokens"] == 16_000
+    # The drafter emits a full draft with two tables after reasoning; one
+    # global 8192 cap truncated it into unparseable JSON.
+    assert captured["max_tokens"] == 24_000
     assert captured["temperature"] == 0.4
     assert captured["response_format"] == {"type": "json_object"}
 
     captured.clear()
     model.chat("scorer", "sys", "prompt")
-    assert captured["max_tokens"] == 2_000
+    assert captured["max_tokens"] == 16_000
     assert captured["temperature"] == 0.1
 
 
@@ -226,3 +226,55 @@ def test_retry_policy_delays_grow_and_cap() -> None:
     assert policy.delay_for(2) == 3.0
     assert policy.delay_for(3) == 9.0
     assert policy.delay_for(4) == 10.0
+
+
+def test_reasoning_effort_is_forwarded_and_validated(config: MinerConfig) -> None:
+    captured: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        import json
+
+        captured.update(json.loads(request.content))
+        return httpx.Response(200, json=COMPLETION)
+
+    config.roles["critic"] = {**config.roles["critic"], "reasoning_effort": "low"}
+    config.roles["scorer"] = {**config.roles["scorer"], "reasoning_effort": "off"}
+    model = _model(config, handler)
+    model.chat("critic", "sys", "prompt")
+    assert captured["reasoning"] == {"effort": "low"}
+    captured.clear()
+    model.chat("scorer", "sys", "prompt")
+    assert captured["reasoning"] == {"enabled": False}
+    captured.clear()
+    model.chat("mapper", "sys", "prompt")
+    # No explicit effort: thinking is capped so it cannot starve the answer,
+    # and the measured runaway upstream is excluded from routing.
+    assert captured["reasoning"] == {"max_tokens": 3_000}
+    assert captured["provider"] == {"ignore": ["Relace"]}
+
+    config.roles["mapper"] = {**config.roles["mapper"], "reasoning_effort": "extreme"}
+    with pytest.raises(ValueError, match="reasoning_effort"):
+        config.resolve("mapper")
+
+
+def test_request_timeout_is_capped_per_attempt_not_by_the_run(config: MinerConfig) -> None:
+    """A stalled call must time out and retry, not hold the whole run budget."""
+    from automation_miner.execution import RunExecutionContext
+    from automation_miner.schemas import RunBudget
+
+    timeouts: list[float] = []
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        timeouts.append(request.extensions["timeout"]["read"])
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise httpx.ReadTimeout("stalled", request=request)
+        return httpx.Response(200, json=COMPLETION)
+
+    config.retry = RetryPolicy(attempts=3, initial_seconds=0.0, jitter=0.0, request_seconds=42.0)
+    execution = RunExecutionContext("run", RunBudget(max_seconds=2_400))
+    result = _model(config, handler).chat("mapper", "sys", "prompt", execution=execution)
+    assert result == '{"ok": true}'
+    assert calls["n"] == 2
+    assert all(timeout == 42.0 for timeout in timeouts)

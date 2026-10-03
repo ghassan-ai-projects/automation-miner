@@ -22,6 +22,8 @@ from typing import Any
 
 from pydantic import BaseModel
 
+from automation_miner.artifacts.layout import RunLayout
+
 _AM_RE = re.compile(r"AM-(\d+)")
 _AM_ID_RE = re.compile(r"(?:AM-)?(\d+)", re.IGNORECASE)
 _RUN_ID_RE = re.compile(r"\d{4}-\d{2}-\d{2}_[a-z0-9]+(?:-[a-z0-9]+)*")
@@ -72,8 +74,9 @@ class Workspace:
                 break
             except FileExistsError:
                 n += 1
-        (run_dir / "layers").mkdir()
-        (run_dir / "drafts").mkdir()
+        layout = RunLayout(run_dir)
+        for directory in (layout.layers, layout.drafts, layout.critique):
+            directory.mkdir(parents=True)
         return run_dir
 
     def opp_dir(self, domain_slug: str) -> Path:
@@ -85,31 +88,36 @@ class Workspace:
         """Return the next number without reserving it."""
         return max(self._highest_am_number(), self._counter_value()) + 1
 
+    def _advance_counter(self, connection: sqlite3.Connection, count: int) -> tuple[int, int]:
+        """Inside an IMMEDIATE transaction: claim ``count`` ids past every known max."""
+        connection.execute(
+            "CREATE TABLE IF NOT EXISTS am_counter "
+            "(id INTEGER PRIMARY KEY CHECK (id = 1), value INTEGER NOT NULL)"
+        )
+        row = connection.execute("SELECT value FROM am_counter WHERE id = 1").fetchone()
+        stored = int(row[0]) if row else 0
+        start = max(stored, self._legacy_counter(), self._highest_am_number()) + 1
+        end = start + count - 1
+        connection.execute(
+            "INSERT INTO am_counter (id, value) VALUES (1, ?) "
+            "ON CONFLICT(id) DO UPDATE SET value = excluded.value",
+            (end,),
+        )
+        return start, end
+
     def reserve_am_numbers(self, count: int) -> list[int]:
         """Atomically reserve a monotonic AM-ID range across concurrent runs."""
         if count < 1:
             raise ValueError("count must be at least 1")
         self.ensure()
-        database = self.root / ".am-ids.sqlite3"
         with _legacy_counter_lock(self.root):
-            connection = sqlite3.connect(database, timeout=30.0, isolation_level=None)
+            connection = sqlite3.connect(
+                self.root / ".am-ids.sqlite3", timeout=30.0, isolation_level=None
+            )
             try:
                 connection.execute("PRAGMA busy_timeout = 30000")
                 connection.execute("BEGIN IMMEDIATE")
-                connection.execute(
-                    "CREATE TABLE IF NOT EXISTS am_counter (id INTEGER PRIMARY KEY CHECK (id = 1), value INTEGER NOT NULL)"
-                )
-                row = connection.execute(
-                    "SELECT value FROM am_counter WHERE id = 1"
-                ).fetchone()
-                stored = int(row[0]) if row else 0
-                start = max(stored, self._legacy_counter(), self._highest_am_number()) + 1
-                end = start + count - 1
-                connection.execute(
-                    "INSERT INTO am_counter (id, value) VALUES (1, ?) "
-                    "ON CONFLICT(id) DO UPDATE SET value = excluded.value",
-                    (end,),
-                )
+                start, end = self._advance_counter(connection, count)
                 connection.execute("COMMIT")
                 write_text(self.root / ".am-counter", f"{end}\n")
                 return list(range(start, end + 1))

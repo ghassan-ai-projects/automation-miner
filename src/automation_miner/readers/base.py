@@ -24,6 +24,8 @@ Writing a reader is intentionally small — subclass :class:`BaseReader`, declar
 
 from __future__ import annotations
 
+from contextvars import ContextVar
+
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -137,6 +139,10 @@ def missing_dependency(module: str, extra: str) -> Availability:
     return Availability.yes()
 
 
+MetaValue = str | int | float | bool
+_NOTES: ContextVar[dict[str, MetaValue] | None] = ContextVar("reader_notes", default=None)
+
+
 class BaseReader:
     """Convenience base: byte loading, decoding, and the SourceDocument wrapper.
 
@@ -157,31 +163,42 @@ class BaseReader:
     def parse(self, path: Path, data: bytes) -> list[Segment]:
         raise NotImplementedError
 
+    def note(self, key: str, value: MetaValue) -> None:
+        """Record a fact about the file being parsed (rows, pages, parse errors).
+
+        Notes live for one :meth:`read` call in a context variable, never on
+        the instance, so one registry can read many files concurrently.
+        """
+        notes = _NOTES.get()
+        if notes is not None:
+            notes[key] = value
+
     def decode(self, data: bytes) -> str:
         preferred = str(self.options.get("encoding", "") or "")
-        text, self._encoding = decode_bytes(data, preferred)
+        text, encoding = decode_bytes(data, preferred)
+        self.note("encoding", encoding)
         return text
 
     def read(self, path: Path) -> SourceDocument:
-        self._encoding = ""
+        token = _NOTES.set({})
         try:
-            data = path.read_bytes()
-        except OSError as exc:
-            raise ReaderError(f"cannot read file: {exc}") from exc
-        segments = [s for s in self.parse(path, data) if s.text.strip()]
-        return SourceDocument(
-            path=str(path),
-            reader=self.name,
-            media_type=self.media_type,
-            segments=segments,
-            encoding="" if self.binary else self._encoding,
-            meta=self.meta(path, data, segments),
-        )
+            try:
+                data = path.read_bytes()
+            except OSError as exc:
+                raise ReaderError(f"cannot read file: {exc}") from exc
+            segments = [s for s in self.parse(path, data) if s.text.strip()]
+            encoding = "" if self.binary else str((_NOTES.get() or {}).get("encoding", ""))
+            return SourceDocument(
+                path=str(path), reader=self.name, media_type=self.media_type,
+                segments=segments, encoding=encoding, meta=self.meta(path, data, segments),
+            )
+        finally:
+            _NOTES.reset(token)
 
-    def meta(
-        self, path: Path, data: bytes, segments: list[Segment]
-    ) -> dict[str, str | int | float | bool]:
-        return {"bytes": len(data), "segments": len(segments)}
+    def meta(self, path: Path, data: bytes, segments: list[Segment]) -> dict[str, MetaValue]:
+        """Size plus every note recorded while parsing this file."""
+        notes = {k: v for k, v in (_NOTES.get() or {}).items() if k != "encoding"}
+        return {"bytes": len(data), "segments": len(segments), **notes}
 
     def option(self, key: str, default: int) -> int:
         """Read an int option supplied via ``[readers.<name>]`` in miner.toml."""

@@ -6,8 +6,15 @@ import json
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 
+from automation_miner.artifacts.layout import RunLayout
 from automation_miner.artifacts.registry import reindex
 from automation_miner.artifacts.workspace import read_json
+
+
+def _journal(run_dir: Path) -> Path:
+    path = RunLayout(run_dir).journal
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return path
 
 
 def _brief(run_id: str, am_id: str = "AM-001") -> str:
@@ -56,7 +63,7 @@ def test_reindex_quarantines_dead_interrupted_publication(tmp_path: Path) -> Non
     (run_dir / "run.json").write_text(
         json.dumps(_manifest(run_id, publication_status="pending")), encoding="utf-8"
     )
-    (run_dir / "publication.json").write_text(
+    _journal(run_dir).write_text(
         json.dumps({"run_id": run_id, "state": "promoted", "pid": 999_999_999}),
         encoding="utf-8",
     )
@@ -76,7 +83,7 @@ def test_reindex_quarantines_dead_interrupted_publication(tmp_path: Path) -> Non
     manifest = read_json(run_dir / "run.json")
     assert manifest["opportunities"] == []
     assert manifest["filtered"] == ["AM-001"]
-    assert read_json(run_dir / "publication.json")["state"] == "quarantined"
+    assert read_json(_journal(run_dir))["state"] == "quarantined"
     assert (run_dir / "error.json").is_file()
     summary = read_json(run_dir / "summary.json")
     assert summary["status"] == "failed"
@@ -96,7 +103,7 @@ def test_reindex_completes_manifest_finalization_idempotently(tmp_path: Path) ->
     (run_dir / "run.json").write_text(
         json.dumps(_manifest(run_id, publication_status="complete")), encoding="utf-8"
     )
-    (run_dir / "publication.json").write_text(
+    _journal(run_dir).write_text(
         json.dumps({"run_id": run_id, "state": "manifest_complete", "pid": 1}),
         encoding="utf-8",
     )
@@ -111,7 +118,7 @@ def test_reindex_completes_manifest_finalization_idempotently(tmp_path: Path) ->
     reindex(tmp_path)
     reindex(tmp_path)
 
-    assert read_json(run_dir / "publication.json")["state"] == "complete"
+    assert read_json(_journal(run_dir))["state"] == "complete"
     assert read_json(run_dir / "summary.json")["publication_status"] == "complete"
     assert "> **Publication:** complete  " in (run_dir / "report.md").read_text()
 
@@ -123,7 +130,7 @@ def test_reindex_recovers_after_manifest_commit_before_journal_commit(tmp_path: 
     (run_dir / "run.json").write_text(
         json.dumps(_manifest(run_id, publication_status="complete")), encoding="utf-8"
     )
-    (run_dir / "publication.json").write_text(
+    _journal(run_dir).write_text(
         json.dumps({"run_id": run_id, "state": "views_written", "pid": 999_999_999}),
         encoding="utf-8",
     )
@@ -142,7 +149,7 @@ def test_reindex_recovers_after_manifest_commit_before_journal_commit(tmp_path: 
 
     assert registry["stats"]["opps"] == 1
     assert (opp_dir / "AM-001-published.md").is_file()
-    assert read_json(run_dir / "publication.json")["state"] == "complete"
+    assert read_json(_journal(run_dir))["state"] == "complete"
     assert read_json(run_dir / "summary.json")["publication_status"] == "complete"
 
 

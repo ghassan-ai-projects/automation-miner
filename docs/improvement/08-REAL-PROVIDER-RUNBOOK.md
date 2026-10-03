@@ -12,7 +12,7 @@ the workspace, raw provider payloads, and raw source documents outside Git.
 
 The harness refuses to call a provider unless both `--live` and
 `--privacy-approved` are present. It also rejects a profile whose budget is
-above 70 attempts, 120,000 tokens, or 30 minutes, and requires serial critique
+above the default run budget (200 attempts, 1,500,000 tokens, 40 minutes), and requires serial critique
 and score workers for the pilot.
 
 Before running, record privately:
@@ -48,14 +48,14 @@ critique = 1
 score = 1
 
 [profiles.live_flash.budget]
-max_attempts = 70
-max_tokens = 120000
-max_seconds = 1800
+max_attempts = 200
+max_tokens = 1500000
+max_seconds = 2400
 
 [profiles.live_strong.budget]
-max_attempts = 70
-max_tokens = 120000
-max_seconds = 1800
+max_attempts = 200
+max_tokens = 1500000
+max_seconds = 2400
 ```
 
 Set the key only in the shell or a secret manager:
@@ -108,7 +108,7 @@ absence claims, policy conflicts, and a prompt-injection document. The expected
 labels and rationales are not sent to the model.
 
 Run it through both configured critic profiles. The two evaluations share one
-aggregate ceiling of 70 attempts, 120,000 tokens, and 30 minutes; the 1,000
+aggregate ceiling of 200 attempts, 1,500,000 tokens, and 40 minutes; the 1,000
 token critic response cap leaves room for the two 20-case passes and bounded
 validation retries:
 

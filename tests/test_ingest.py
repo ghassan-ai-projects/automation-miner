@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-import automation_miner.ingest as ingest_module
+import automation_miner.ingest.packet as ingest_module
 from automation_miner.context import ContextBudget, estimate_tokens
 from automation_miner.ingest import MAX_SLUG_CHARS, ingest_file, ingest_idea, ingest_kb, slugify
 from automation_miner.models.client import MinerModel
@@ -52,7 +52,7 @@ def test_ingest_file_markdown_produces_heading_locators(tmp_path: Path) -> None:
 
 def test_ingest_file_reads_pdf(tmp_path: Path) -> None:
     pytest.importorskip("pypdf")
-    from test_readers import make_pdf
+    from pdf_fixtures import make_pdf
 
     path = tmp_path / "regulation.pdf"
     path.write_bytes(make_pdf(["Audit trail retained for 10 years."]))
@@ -292,3 +292,9 @@ def test_chunks_carry_source_and_are_sequentially_numbered(tmp_path: Path) -> No
     assert {c.source for c in packet.chunks} == {"a.md", "b.md"}
     assert packet.chunk_ids() == {c.id for c in packet.chunks}
     assert "[S1]" in packet.overview
+
+
+def test_idea_heading_punctuation_does_not_leak_into_the_domain() -> None:
+    packet = ingest_idea("DHL in Germany — operational domain description:\n\nDrivers scan parcels.")
+    assert packet.domain == "DHL in Germany — operational domain description"
+    assert packet.domain_slug == "dhl-in-germany-operational-domain-description"

@@ -22,60 +22,33 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-ROLES = ("mapper", "layer_analyst", "drafter", "critic", "refiner", "scorer")
+from automation_miner.models.defaults import (
+    PIPELINE_ROLES,
+    EVALUATION_ROLES,
+    ROLES,
+    ROLE_DEFAULTS,
+    REASONING_EFFORTS,
+    DEFAULT_RETRY,
+    DEFAULT_CONCURRENCY,
+    DEFAULT_BUDGET,
+    DEFAULT_CONFIG,
+)
 
-# Per-role sampling and output limits. Drafting and refining need room for a
-# complete draft; scoring returns a handful of fields and should be near-greedy.
-ROLE_DEFAULTS: dict[str, dict[str, Any]] = {
-    "mapper": {"temperature": 0.2, "max_tokens": 6_000},
-    "layer_analyst": {"temperature": 0.3, "max_tokens": 8_000},
-    "drafter": {"temperature": 0.4, "max_tokens": 16_000},
-    "critic": {"temperature": 0.2, "max_tokens": 4_000},
-    "refiner": {"temperature": 0.3, "max_tokens": 16_000},
-    "scorer": {"temperature": 0.1, "max_tokens": 2_000},
-}
-
-DEFAULT_RETRY: dict[str, Any] = {
-    "attempts": 4,
-    "initial_seconds": 1.0,
-    "backoff": 2.0,
-    "max_seconds": 30.0,
-    "jitter": 0.25,
-}
-
-DEFAULT_CONCURRENCY: dict[str, Any] = {
-    "critique": 4,
-    "score": 4,
-}
-
-DEFAULT_BUDGET: dict[str, Any] = {
-    "max_attempts": 70,
-    "max_tokens": 120_000,
-    "max_seconds": 1_800.0,
-}
-
-DEFAULT_CONFIG: dict[str, Any] = {
-    "providers": {
-        "openrouter": {
-            "base_url": "https://openrouter.ai/api/v1",
-            "api_key_env": "OPENROUTER_API_KEY",
-            "supports_json_mode": True,
-        },
-        "gemini": {
-            "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
-            "api_key_env": "GOOGLE_API_KEY",
-            "supports_json_mode": True,
-        },
-    },
-    "roles": {
-        "mapper": {"provider": "openrouter", "model": "anthropic/claude-sonnet-4"},
-        "layer_analyst": {"provider": "openrouter", "model": "anthropic/claude-sonnet-4"},
-        "drafter": {"provider": "openrouter", "model": "anthropic/claude-sonnet-4"},
-        "critic": {"provider": "openrouter", "model": "openai/gpt-4.1"},
-        "refiner": {"provider": "openrouter", "model": "anthropic/claude-sonnet-4"},
-        "scorer": {"provider": "openrouter", "model": "openai/gpt-4.1"},
-    },
-}
+__all__ = [
+    "PIPELINE_ROLES",
+    "EVALUATION_ROLES",
+    "ROLES",
+    "ROLE_DEFAULTS",
+    "REASONING_EFFORTS",
+    "DEFAULT_RETRY",
+    "DEFAULT_CONCURRENCY",
+    "DEFAULT_BUDGET",
+    "DEFAULT_CONFIG",
+    "MinerConfig",
+    "RetryPolicy",
+    "RoleRoute",
+    "load_config",
+]
 
 
 @dataclass(frozen=True)
@@ -87,6 +60,8 @@ class RetryPolicy:
     backoff: float = 2.0
     max_seconds: float = 30.0
     jitter: float = 0.25
+    request_seconds: float = 300.0
+    stall_seconds: float = 60.0
 
     @classmethod
     def from_dict(cls, data: dict[str, Any] | None) -> RetryPolicy:
@@ -97,6 +72,8 @@ class RetryPolicy:
             backoff=max(1.0, float(merged["backoff"])),
             max_seconds=max(0.0, float(merged["max_seconds"])),
             jitter=min(1.0, max(0.0, float(merged["jitter"]))),
+            request_seconds=max(1.0, float(merged["request_seconds"])),
+            stall_seconds=max(0.0, float(merged["stall_seconds"])),
         )
 
     def delay_for(self, attempt: int) -> float:
@@ -116,6 +93,14 @@ class RoleRoute:
     temperature: float = 0.3
     max_tokens: int = 8_000
     json_mode: bool = False
+    # OpenRouter's unified reasoning control: "off", "minimal", "low",
+    # "medium", or "high". Empty leaves the provider default untouched.
+    reasoning_effort: str = ""
+    stream: bool = False
+    # Cap on reasoning tokens (OpenRouter ``reasoning.max_tokens``); 0 = no cap.
+    reasoning_max_tokens: int = 0
+    # Provider routing preferences passed through as OpenRouter's ``provider``.
+    routing: tuple[tuple[str, Any], ...] = ()
 
 
 @dataclass
@@ -145,63 +130,78 @@ class MinerConfig:
         defaults = ROLE_DEFAULTS[role]
         if dry_run:
             return RoleRoute(
-                provider="mock",
-                model="mock",
-                temperature=float(defaults["temperature"]),
+                provider="mock", model="mock", temperature=float(defaults["temperature"]),
                 max_tokens=int(defaults["max_tokens"]),
             )
-        entry = dict(self.roles.get(role) or DEFAULT_CONFIG["roles"][role])
-        if os.getenv("MINER_PROVIDER"):
-            entry["provider"] = os.environ["MINER_PROVIDER"]
-        if os.getenv("MINER_MODEL"):
-            entry["model"] = os.environ["MINER_MODEL"]
-        role_env = os.getenv(f"MINER_MODEL_{role.upper()}")
-        if role_env:
-            entry["model"] = role_env
-
+        entry = _with_env_overrides(role, dict(self.roles.get(role) or DEFAULT_CONFIG["roles"][role]))
         temperature = _as_float(entry.get("temperature"), float(defaults["temperature"]))
         max_tokens = _as_int(entry.get("max_tokens"), int(defaults["max_tokens"]))
-
-        provider = entry["provider"]
-        if provider == "mock":
+        if entry["provider"] == "mock":
             return RoleRoute(
-                provider="mock",
-                model=str(entry.get("model", "mock")),
-                temperature=temperature,
-                max_tokens=max_tokens,
+                provider="mock", model=str(entry.get("model", "mock")),
+                temperature=temperature, max_tokens=max_tokens,
             )
+        return self._provider_route(role, entry, temperature, max_tokens)
+
+    def _provider(self, role: str, provider: str) -> tuple[dict[str, Any], str, str]:
+        """The provider table plus its validated base_url and api_key_env."""
+        pconf = self.providers.get(provider)
+        if pconf is None:
+            raise ValueError(f"Provider {provider!r} (role {role!r}) is not defined in [providers].")
+        base_url = str(pconf.get("base_url", "")).strip()
+        api_key_env = str(pconf.get("api_key_env", "")).strip()
+        for value, name in ((base_url, "base_url"), (api_key_env, "api_key_env")):
+            if not value:
+                raise ValueError(f"Provider {provider!r} does not define {name}.")
+        return pconf, base_url, api_key_env
+
+    def _provider_route(
+        self, role: str, entry: dict[str, Any], temperature: float, max_tokens: int
+    ) -> RoleRoute:
         model = str(entry.get("model", "")).strip()
         if not model:
             raise ValueError(f"Role {role!r} does not define a model.")
-        pconf = self.providers.get(provider)
-        if pconf is None:
-            raise ValueError(
-                f"Provider {provider!r} (role {role!r}) is not defined in [providers]."
-            )
-        base_url = str(pconf.get("base_url", "")).strip()
-        api_key_env = str(pconf.get("api_key_env", "")).strip()
-        if not base_url:
-            raise ValueError(f"Provider {provider!r} does not define base_url.")
-        if not api_key_env:
-            raise ValueError(f"Provider {provider!r} does not define api_key_env.")
-        json_mode = bool(entry.get("json_mode", pconf.get("supports_json_mode", False)))
+        pconf, base_url, api_key_env = self._provider(role, entry["provider"])
+        default_cap = int(ROLE_DEFAULTS[role].get("reasoning_max_tokens", 0))
         return RoleRoute(
-            provider=provider,
-            model=model,
-            base_url=base_url,
-            api_key_env=api_key_env,
-            temperature=temperature,
-            max_tokens=max_tokens,
-            json_mode=json_mode,
+            provider=entry["provider"], model=model, base_url=base_url, api_key_env=api_key_env,
+            temperature=temperature, max_tokens=max_tokens,
+            json_mode=bool(entry.get("json_mode", pconf.get("supports_json_mode", False))),
+            reasoning_effort=_reasoning_effort(role, entry),
+            stream=bool(entry.get("stream", pconf.get("stream", False))),
+            reasoning_max_tokens=max(0, _as_int(entry.get("reasoning_max_tokens"), default_cap)),
+            routing=tuple(sorted(dict(pconf.get("routing", {})).items())),
         )
 
     def routing_table(self, dry_run: bool = False) -> dict[str, str]:
         """Human-readable role → provider/model map (for manifests/server_info)."""
         table: dict[str, str] = {}
-        for role in ROLES:
+        for role in PIPELINE_ROLES:
             route = self.resolve(role, dry_run)
             table[role] = f"{route.provider}/{route.model}"
         return table
+
+
+def _with_env_overrides(role: str, entry: dict[str, Any]) -> dict[str, Any]:
+    """MINER_PROVIDER / MINER_MODEL apply to every role; MINER_MODEL_<ROLE> to one."""
+    if os.getenv("MINER_PROVIDER"):
+        entry["provider"] = os.environ["MINER_PROVIDER"]
+    if os.getenv("MINER_MODEL"):
+        entry["model"] = os.environ["MINER_MODEL"]
+    role_env = os.getenv(f"MINER_MODEL_{role.upper()}")
+    if role_env:
+        entry["model"] = role_env
+    return entry
+
+
+def _reasoning_effort(role: str, entry: dict[str, Any]) -> str:
+    effort = str(entry.get("reasoning_effort", "")).strip().lower()
+    if effort not in REASONING_EFFORTS:
+        raise ValueError(
+            f"Role {role!r} has reasoning_effort {effort!r}; "
+            f"expected one of {', '.join(sorted(e for e in REASONING_EFFORTS if e))}."
+        )
+    return effort
 
 
 def _as_float(value: Any, default: float) -> float:
@@ -218,50 +218,49 @@ def _as_int(value: Any, default: int) -> int:
         return default
 
 
+def _config_path(workspace: Path | None) -> Path | None:
+    candidates = [workspace / "miner.toml"] if workspace is not None else []
+    candidates.append(Path.home() / ".config" / "automation-miner" / "miner.toml")
+    return next((p for p in candidates if p.is_file()), None)
+
+
+def _merged(data: dict[str, Any], overrides: dict[str, Any], table: str) -> dict[str, Any]:
+    return {**data.get(table, {}), **overrides.get(table, {})}
+
+
+def _providers(data: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """Per-provider merge: a workspace that redefines [providers.openrouter]
+    keeps the defaults it does not mention (such as streaming)."""
+    defaults = DEFAULT_CONFIG["providers"]
+    return {
+        name: {**defaults.get(name, {}), **settings}
+        for name, settings in {**defaults, **data.get("providers", {})}.items()
+    }
+
+
 def load_config(workspace: Path | None = None, profile: str = "default") -> MinerConfig:
     """Load miner.toml (workspace first, then user config dir) plus a profile.
 
     A ``[profiles.<name>]`` table may override ``roles``, ``context``,
     ``readers``, ``retry``, ``concurrency``, and ``budget``.
     """
-    candidates: list[Path] = []
-    if workspace is not None:
-        candidates.append(workspace / "miner.toml")
-    candidates.append(Path.home() / ".config" / "automation-miner" / "miner.toml")
-
-    path = next((p for p in candidates if p.is_file()), None)
+    path = _config_path(workspace)
     if path is None:
         return MinerConfig(
-            providers=dict(DEFAULT_CONFIG["providers"]),
-            roles=dict(DEFAULT_CONFIG["roles"]),
+            providers=dict(DEFAULT_CONFIG["providers"]), roles=dict(DEFAULT_CONFIG["roles"])
         )
-
     data = tomllib.loads(path.read_text(encoding="utf-8"))
     profiles = data.get("profiles", {})
     if profile != "default" and profile not in profiles:
         raise ValueError(f"Profile {profile!r} is not defined in {path}.")
     overrides = profiles.get(profile, {}) if profile != "default" else {}
-
-    providers = {**DEFAULT_CONFIG["providers"], **data.get("providers", {})}
-    roles = {**DEFAULT_CONFIG["roles"], **data.get("roles", {})}
-    roles.update(overrides.get("roles", {}))
-
-    context = {**data.get("context", {}), **overrides.get("context", {})}
-    readers = {**data.get("readers", {}), **overrides.get("readers", {})}
-    retry = {**data.get("retry", {}), **overrides.get("retry", {})}
-    budget = {**DEFAULT_BUDGET, **data.get("budget", {}), **overrides.get("budget", {})}
-    concurrency = {
-        **DEFAULT_CONCURRENCY,
-        **data.get("concurrency", {}),
-        **overrides.get("concurrency", {}),
-    }
     return MinerConfig(
-        providers=providers,
-        roles=roles,
-        context=context,
-        readers=readers,
-        retry=RetryPolicy.from_dict(retry),
-        concurrency=concurrency,
-        budget=budget,
+        providers=_providers(data),
+        roles={**DEFAULT_CONFIG["roles"], **_merged(data, overrides, "roles")},
+        context=_merged(data, overrides, "context"),
+        readers=_merged(data, overrides, "readers"),
+        retry=RetryPolicy.from_dict(_merged(data, overrides, "retry")),
+        concurrency={**DEFAULT_CONCURRENCY, **_merged(data, overrides, "concurrency")},
+        budget={**DEFAULT_BUDGET, **_merged(data, overrides, "budget")},
         source=str(path),
     )

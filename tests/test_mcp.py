@@ -29,10 +29,29 @@ def test_all_tools_have_schemas() -> None:
         "get_run_summary",
         "get_run_manifest",
         "get_run_error",
+        "evaluate_run",
         "list_readers",
         "reindex",
         "server_info",
     }
+
+
+def test_evaluate_run_lints_by_default_and_judges_on_request(workspace: Path) -> None:
+    run_id = _mine(workspace)["run_id"]
+    lint_only = dispatch("evaluate_run", {"run_id": run_id}, workspace)
+    assert lint_only.success, lint_only.error
+    assert lint_only.data["lint_errors"] == 0
+    assert lint_only.data["briefs"] == []
+
+    judged = dispatch(
+        "evaluate_run", {"run_id": run_id, "judge": True, "dry_run": True}, workspace
+    )
+    assert judged.success, judged.error
+    assert judged.data["means"]["overall"] == 4.0
+    assert judged.data["portfolio"]["diversity"] == 4
+
+    missing = dispatch("evaluate_run", {"run_id": "2026-01-01_none"}, workspace)
+    assert not missing.success
 
 
 def test_mine_domain_envelope(workspace: Path) -> None:
