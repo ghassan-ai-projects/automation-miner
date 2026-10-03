@@ -76,9 +76,9 @@ warn_redundant_casts = true
 warn_unused_ignores = true
 show_error_codes = true
 
-# LangGraph transports untyped values at the graph boundary. The boundary is
-# explicit in graph/build.py; the shared MinerState and execution context stay
-# typed so dynamic provider payloads do not spread through the package.
+# Provider payloads are untyped JSON at the HTTP boundary. That boundary is
+# explicit in models/client.py; the pipeline stages, shared MinerState, and
+# execution context are fully typed.
 [[tool.mypy.overrides]]
-module = ["automation_miner.graph.build", "automation_miner.models.client"]
+module = ["automation_miner.models.client"]
 disallow_untyped_defs = false

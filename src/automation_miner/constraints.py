@@ -26,36 +26,36 @@ RECOGNIZED_POLICY_PARAMS = frozenset(
 )
 
 
-def normalize_constraint_params(
-    params: Mapping[str, Any] | None,
-) -> dict[str, str]:
+def _checked(raw_key: object, raw_value: object) -> tuple[str, str]:
+    key = str(raw_key).strip()
+    if not _KEY.fullmatch(key):
+        raise ValueError(
+            f"invalid constraint parameter {key!r}; use letters, numbers, '.', '_', or '-'"
+        )
+    value = str(raw_value).strip()
+    if not value:
+        raise ValueError(f"constraint parameter {key!r} must not be empty")
+    if len(value) > MAX_VALUE_CHARS:
+        raise ValueError(f"constraint parameter {key!r} exceeds {MAX_VALUE_CHARS} characters")
+    return key, value
+
+
+def normalize_constraint_params(params: Mapping[str, Any] | None) -> dict[str, str]:
     """Validate free-form constraint parameters without hardcoding their meaning."""
     if not params:
         return {}
     if len(params) > MAX_PARAMS:
         raise ValueError(f"at most {MAX_PARAMS} constraint parameters are allowed")
     normalized: dict[str, str] = {}
-    normalized_keys: dict[str, str] = {}
+    spellings: dict[str, str] = {}
     for raw_key, raw_value in params.items():
-        key = str(raw_key).strip()
-        if not _KEY.fullmatch(key):
-            raise ValueError(
-                f"invalid constraint parameter {key!r}; use letters, numbers, '.', '_', or '-'"
-            )
-        value = str(raw_value).strip()
-        if not value:
-            raise ValueError(f"constraint parameter {key!r} must not be empty")
-        if len(value) > MAX_VALUE_CHARS:
-            raise ValueError(
-                f"constraint parameter {key!r} exceeds {MAX_VALUE_CHARS} characters"
-            )
-        folded = key.casefold()
-        if folded in normalized_keys:
+        key, value = _checked(raw_key, raw_value)
+        if key.casefold() in spellings:
             raise ValueError(
                 f"constraint parameter {key!r} duplicates "
-                f"{normalized_keys[folded]!r} case-insensitively"
+                f"{spellings[key.casefold()]!r} case-insensitively"
             )
-        normalized_keys[folded] = key
+        spellings[key.casefold()] = key
         normalized[key] = value
     return normalized
 

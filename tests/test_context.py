@@ -253,3 +253,15 @@ def test_fit_text_trims_at_a_boundary() -> None:
 
 def test_fit_text_leaves_short_text_alone() -> None:
     assert fit_text("short", budget_tokens=1_000) == "short"
+
+
+def test_german_evidence_is_tokenized_and_retrieved_by_layer() -> None:
+    from automation_miner.context import tokenize
+
+    assert tokenize("Überwachung der Rückstände") == ["überwachung", "der", "rückstände"]
+    chunks = [
+        Chunk(id="S1", source="a.md", text="Kantine Speiseplan Woche", tokens=5),
+        Chunk(id="S2", source="b.md", text="Manuelle Überwachung der Fristen und Rückstau", tokens=8),
+    ]
+    selected = EvidenceIndex(chunks).select(layer_query(Layer.MONITORING), 8)
+    assert [chunk.id for chunk in selected] == ["S2"]

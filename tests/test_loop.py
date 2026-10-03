@@ -128,3 +128,24 @@ def test_gate_clean_version_beats_higher_invalid_score() -> None:
     _, history = run_critique_loop(GateModel([8.0, 7.4]), _draft(), [], max_iterations=2)
     assert history[0]["overall"] > history[1]["overall"]
     assert history[1]["selected"] is True
+
+
+def test_hedged_prose_fails_the_round_and_feeds_excerpts_to_the_refiner() -> None:
+    hedged = _draft().model_copy(
+        update={
+            "problem": "Clerks re-key claims (inferred from S2: 're-key'; volume not "
+            "explicitly stated).",
+        }
+    )
+    model = FakeModel([9.0])
+    final, history = run_critique_loop(model, hedged, [], max_iterations=2)
+
+    assert not history[0]["passed"]
+    assert history[0]["hedges"] >= 2
+    issues = history[0]["critique"]["writing_issues"]
+    assert any("inferred from S2" in issue for issue in issues)
+    refine_prompt = next(prompt for role, prompt in model.prompts if role == "refiner")
+    assert "remove evidence commentary from prose" in refine_prompt
+    # The clean refined version is preferred over the hedged original.
+    assert history[1]["passed"]
+    assert "inferred from" not in final.problem

@@ -25,7 +25,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from automation_miner.context import ContextBudget, budget_chars, estimate_tokens, renumber
+from automation_miner.context import (
+    ContextBudget, budget_chars, estimate_tokens, locator_span, renumber,
+)
 from automation_miner.prompts import MAPPER_SYSTEM, PROMPT_VERSION, digest_prompt
 from automation_miner.schemas import Chunk
 
@@ -100,93 +102,90 @@ class _Batch:
     tokens: int
 
 
+def _make_batch(current: list[Chunk], tokens: int) -> _Batch:
+    locators = [c.locator for c in current if c.locator]
+    return _Batch(
+        source=current[0].source,
+        locator=locator_span(locators),
+        text="\n\n".join(c.text for c in current),
+        tokens=tokens,
+    )
+
+
 def _batch_chunks(chunks: list[Chunk], batch_tokens: int) -> list[_Batch]:
     """Group consecutive chunks from one source into digest-sized batches."""
     batches: list[_Batch] = []
     current: list[Chunk] = []
-    current_tokens = 0
-
-    def flush() -> None:
-        if not current:
-            return
-        locators = [c.locator for c in current if c.locator]
-        if not locators:
-            span = ""
-        elif len(locators) == 1:
-            span = locators[0]
-        else:
-            span = f"{locators[0]} … {locators[-1]}"
-        batches.append(
-            _Batch(
-                source=current[0].source,
-                locator=span,
-                text="\n\n".join(c.text for c in current),
-                tokens=current_tokens,
-            )
-        )
-
+    tokens = 0
     for chunk in chunks:
-        same_source = not current or chunk.source == current[0].source
-        if current and (current_tokens + chunk.tokens > batch_tokens or not same_source):
-            flush()
-            current, current_tokens = [], 0
+        new_source = bool(current) and chunk.source != current[0].source
+        if current and (tokens + chunk.tokens > batch_tokens or new_source):
+            batches.append(_make_batch(current, tokens))
+            current, tokens = [], 0
         current.append(chunk)
-        current_tokens += chunk.tokens
-    flush()
+        tokens += chunk.tokens
+    if current:
+        batches.append(_make_batch(current, tokens))
     return batches
 
 
+def _digest_one(
+    batch: _Batch, model: MinerModel | RunScopedModel, target_tokens: int, cache: DigestCache
+) -> tuple[str, bool]:
+    """One batch's digest and whether it cost a model call (False on a cache hit).
+
+    Workers return the flag instead of incrementing a shared counter, which
+    was a race when batches run in parallel.
+    """
+    key = cache.key(batch.text, target_tokens)
+    if (cached := cache.get(key)) is not None:
+        return cached, False
+    label = batch.source + (f" ({batch.locator})" if batch.locator else "")
+    prompt = digest_prompt(label, batch.text, budget_chars(target_tokens))
+    result = model.chat("mapper", MAPPER_SYSTEM, prompt)
+    cache.put(key, result)
+    return result, True
+
+
 def _digest_batches(
-    batches: list[_Batch],
-    model: MinerModel | RunScopedModel,
-    target_tokens: int,
-    cache: DigestCache,
-    workers: int,
+    batches: list[_Batch], model: MinerModel | RunScopedModel, target_tokens: int,
+    cache: DigestCache, workers: int,
 ) -> tuple[list[Chunk], int]:
     """Digest every batch, in parallel, returning new chunks and the call count."""
-    calls = 0
-
-    def run(batch: _Batch) -> str:
-        nonlocal calls
-        key = cache.key(batch.text, target_tokens)
-        if (cached := cache.get(key)) is not None:
-            return cached
-        label = batch.source + (f" ({batch.locator})" if batch.locator else "")
-        result = model.chat(
-            "mapper", MAPPER_SYSTEM, digest_prompt(label, batch.text, budget_chars(target_tokens))
-        )
-        calls += 1
-        cache.put(key, result)
-        return result
+    def run(batch: _Batch) -> tuple[str, bool]:
+        return _digest_one(batch, model, target_tokens, cache)
 
     if workers > 1 and len(batches) > 1:
         with ThreadPoolExecutor(max_workers=workers) as pool:
-            texts = list(pool.map(run, batches))
+            results = list(pool.map(run, batches))
     else:
-        texts = [run(batch) for batch in batches]
-
-    chunks: list[Chunk] = []
-    for index, (batch, text) in enumerate(zip(batches, texts, strict=True), 1):
-        body = text.strip()
-        if not body:
-            continue
-        chunks.append(
-            Chunk(
-                id=f"S{index}",
-                source=batch.source,
-                locator=batch.locator,
-                text=body,
-                tokens=estimate_tokens(body),
-                digested=True,
-            )
+        results = [run(batch) for batch in batches]
+    chunks = [
+        Chunk(
+            id=f"S{index}", source=batch.source, locator=batch.locator, text=text.strip(),
+            tokens=estimate_tokens(text.strip()), digested=True,
         )
-    return renumber(chunks), calls
+        for index, (batch, (text, _)) in enumerate(zip(batches, results, strict=True), 1)
+        if text.strip()
+    ]
+    return renumber(chunks), sum(1 for _, called in results if called)
+
+
+def _digest_round(
+    current: list[Chunk], model: MinerModel | RunScopedModel, budget: ContextBudget,
+    cache: DigestCache,
+) -> tuple[list[Chunk], int] | None:
+    """One compression round; None when there is nothing to digest."""
+    batches = _batch_chunks(current, budget.digest_chunk_tokens)
+    if not batches:
+        return None
+    target_total = int(budget.evidence_tokens * BUDGET_FILL)
+    per_batch = max(MIN_DIGEST_TOKENS, target_total // len(batches))
+    return _digest_batches(batches, model, per_batch, cache, max(1, budget.digest_workers))
 
 
 def digest_evidence(
-    chunks: list[Chunk],
-    model: MinerModel | RunScopedModel,
-    budget: ContextBudget,
+    chunks: list[Chunk], model: MinerModel | RunScopedModel, budget: ContextBudget,
     cache: DigestCache | None = None,
 ) -> DigestOutcome:
     """Compress an over-budget evidence index toward the budget.
@@ -196,35 +195,23 @@ def digest_evidence(
     approaches the allowance from below instead of collapsing far beneath it.
     """
     outcome = DigestOutcome(chunks=chunks)
-    total = sum(chunk.tokens for chunk in chunks)
-    if not chunks or total <= budget.evidence_tokens:
+    if not chunks or sum(chunk.tokens for chunk in chunks) <= budget.evidence_tokens:
         return outcome
-
     cache = cache or DigestCache()
-    workers = max(1, budget.digest_workers)
     current = chunks
-
     for round_no in range(1, max(1, budget.max_digest_rounds) + 1):
-        batches = _batch_chunks(current, budget.digest_chunk_tokens)
-        if not batches:
+        result = _digest_round(current, model, budget, cache)
+        if result is None:
             break
-        target_total = int(budget.evidence_tokens * BUDGET_FILL)
-        per_batch = max(MIN_DIGEST_TOKENS, target_total // len(batches))
-        digested, calls = _digest_batches(batches, model, per_batch, cache, workers)
-        outcome.calls += calls
-        outcome.rounds = round_no
-        outcome.digested = True
+        digested, calls = result
+        outcome.calls, outcome.rounds, outcome.digested = outcome.calls + calls, round_no, True
         if not digested:
             break
-        new_total = sum(chunk.tokens for chunk in digested)
-        # A round that fails to shrink the index will not converge; stop and trim.
-        if new_total >= sum(chunk.tokens for chunk in current):
-            current = digested
-            break
+        shrank = sum(c.tokens for c in digested) < sum(c.tokens for c in current)
         current = digested
-        if new_total <= budget.evidence_tokens:
+        # A round that fails to shrink the index will not converge; stop and trim.
+        if not shrank or sum(c.tokens for c in current) <= budget.evidence_tokens:
             break
-
     outcome.chunks = trim_to_budget(current, budget.evidence_tokens)
     outcome.cache_hits = cache.hits
     return outcome

@@ -10,14 +10,20 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE_ROOT = ROOT / "src" / "automation_miner"
-SCHEMA_PATH = SOURCE_ROOT / "schemas" / "__init__.py"
+SCHEMA_PACKAGE = SOURCE_ROOT / "schemas"
+SCHEMA_EXPORTS = SCHEMA_PACKAGE / "__init__.py"
 STATE_PATH = SOURCE_ROOT / "graph" / "state.py"
 RETIRED_SYMBOLS = ("DraftBatch", "draft_prompt")
 IGNORED_SCHEMA_SYMBOLS = {"ArtifactModel"}
 
 
 def _source_text() -> str:
-    return "\n".join(path.read_text(encoding="utf-8") for path in SOURCE_ROOT.rglob("*.py"))
+    """Production source, excluding the re-export list that names every schema."""
+    return "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in SOURCE_ROOT.rglob("*.py")
+        if path != SCHEMA_EXPORTS
+    )
 
 
 def _typed_dict_fields(path: Path) -> dict[str, set[str]]:
@@ -48,12 +54,14 @@ def main() -> int:
         if re.search(rf"\b{re.escape(symbol)}\b", text):
             errors.append(f"retired symbol is still referenced: {symbol}")
 
-    tree = ast.parse(SCHEMA_PATH.read_text(encoding="utf-8"), filename=str(SCHEMA_PATH))
-    defined = {
-        node.name
-        for node in tree.body
-        if isinstance(node, ast.ClassDef) and node.name not in IGNORED_SCHEMA_SYMBOLS
-    }
+    defined: set[str] = set()
+    for module in sorted(SCHEMA_PACKAGE.glob("*.py")):
+        tree = ast.parse(module.read_text(encoding="utf-8"), filename=str(module))
+        defined |= {
+            node.name
+            for node in tree.body
+            if isinstance(node, ast.ClassDef) and node.name not in IGNORED_SCHEMA_SYMBOLS
+        }
     for symbol in sorted(defined):
         occurrences = len(re.findall(rf"\b{re.escape(symbol)}\b", text))
         if occurrences < 2:

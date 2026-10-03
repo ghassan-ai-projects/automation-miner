@@ -5,6 +5,7 @@ from __future__ import annotations
 import threading
 import time
 from dataclasses import dataclass
+from typing import Callable
 
 from automation_miner.models.client import UsageTracker
 from automation_miner.schemas import RunBudget
@@ -33,6 +34,17 @@ class BudgetSnapshot:
 
 
 @dataclass(frozen=True)
+class StageProgress:
+    """What a long run has done so far, emitted as each stage begins."""
+
+    stage: str
+    elapsed_seconds: float
+    calls: int
+    tokens: int
+    cost_usd: float
+
+
+@dataclass(frozen=True)
 class AttemptAdmission:
     """Reservation returned when one provider attempt is admitted."""
 
@@ -43,15 +55,22 @@ class AttemptAdmission:
 class RunExecutionContext:
     """Thread-safe limits and usage ownership for exactly one pipeline run."""
 
-    def __init__(self, run_id: str, budget: RunBudget) -> None:
+    def __init__(
+        self,
+        run_id: str,
+        budget: RunBudget,
+        on_stage: Callable[[StageProgress], None] | None = None,
+    ) -> None:
         self.run_id = run_id
         self.budget = budget
+        self.on_stage = on_stage
         self.usage = UsageTracker()
         self._lock = threading.Lock()
         self._started = time.monotonic()
         self._attempts = 0
         self._logical_calls = 0
         self._tokens = 0
+        self._cost_usd = 0.0
         self._reserved_tokens = 0
         self._stage = "setup"
         self._stage_seconds: dict[str, float] = {}
@@ -63,7 +82,19 @@ class RunExecutionContext:
 
     def set_stage(self, stage: str) -> None:
         with self._lock:
+            changed = stage != self._stage
             self._stage = stage
+        if changed and self.on_stage is not None:
+            usage = self.usage.snapshot()
+            self.on_stage(
+                StageProgress(
+                    stage=stage,
+                    elapsed_seconds=round(time.monotonic() - self._started, 1),
+                    calls=usage.calls,
+                    tokens=usage.total_tokens,
+                    cost_usd=usage.cost_usd,
+                )
+            )
 
     def record_stage(self, stage: str, seconds: float) -> None:
         """Record the slowest worker duration for a stage."""
@@ -110,6 +141,14 @@ class RunExecutionContext:
             self._tokens += max(0, prompt_tokens) + max(0, completion_tokens)
             if self._tokens > self.budget.max_tokens:
                 raise BudgetExceeded("max_tokens", self._tokens, self.budget.max_tokens)
+
+    def record_cost(self, cost_usd: float) -> None:
+        """Settle provider-reported spend against the optional cost ceiling."""
+        with self._lock:
+            self._cost_usd += max(0.0, cost_usd)
+            limit = self.budget.max_cost_usd
+            if limit is not None and self._cost_usd > limit:
+                raise BudgetExceeded("max_cost_usd", round(self._cost_usd, 6), limit)
 
     def abandon_attempt(self, admission: AttemptAdmission) -> None:
         """Settle an unknown failed attempt at its full reserved cost."""

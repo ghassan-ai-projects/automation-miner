@@ -13,10 +13,12 @@ automation opportunity briefs**, each ICE-scored and filtered into action tiers.
 The pipeline (LangGraph):
 
 ```
-ingest → input_assessment → domain_map → layer_analysis (×5 parallel)
-       → portfolio_plan (value + diversity + prior ideas) → draft_candidates (parallel)
-       → critique ⇄ refine (threshold 7.5, max N rounds, parallel over opportunities)
-       → score (LLM proposes, code validates) → rank + strategic filters → publish
+ingest → input_assessment → domain_map → layer_analysis (×5 parallel, sized pain points)
+       → pain ledger (ranked in code) → portfolio_plan (must cover the top pains)
+       → draft_candidates (parallel)
+       → critique ⇄ refine (threshold 7.5) → surgical repair + verification if blocked
+       → comparative scoring (LLM proposes side by side; code validates and caps)
+       → rank + strategic filters → publish
 ```
 
 The 7.5 critic target drives refinement; this is an inspiration engine, so a
@@ -99,7 +101,30 @@ uv run automation-miner readers                 # formats handled + missing deps
 uv run automation-miner list --tier high --min-ice 60
 uv run automation-miner show AM-001
 uv run automation-miner summary 2026-07-22_my-domain
+uv run automation-miner evaluate 2026-07-22_my-domain   # grade a run (see below)
+uv run automation-miner export 2026-07-22_my-domain     # stakeholder one-pager (HTML)
 ```
+
+`export` writes `one-pager.html` into the run: one self-contained page (no
+scripts, no external requests, all text escaped) with the recommended
+opportunities, their first step, expected impact, success measures, main
+risks, and current lifecycle status, ready to open, print, or forward.
+
+After publication, track what happens to each brief. Status moves through
+identified → evaluating → designing → implementing → live (or deprecated), and
+each measured result is recorded against one of the brief's numbered success
+measures:
+
+```bash
+uv run automation-miner status AM-001 evaluating --note "2-week pilot agreed"
+uv run automation-miner outcome AM-001 1 "4 min per claim" --baseline "9 min" --verdict met
+uv run automation-miner outcomes        # every result next to the ICE it was published at
+```
+
+Events are appended to `lifecycle.json`; the brief's frontmatter carries the
+current status and latest verdict, and a Lifecycle section shows the history.
+`outcomes` groups verdicts by tier, which tells you whether high-ICE ideas
+actually deliver more often than low ones.
 
 ## Document formats
 
@@ -186,7 +211,9 @@ Agent config snippet:
 
 Tools: `mine_domain`, `list_runs`, `list_domains`, `get_opportunity`,
 `query_registry`, `get_run_report`, `get_run_summary`, `list_readers`, `reindex`,
-`get_run_manifest`, `get_run_error`, `server_info`.
+`get_run_manifest`, `get_run_error`, `evaluate_run`, `server_info`, and the
+lifecycle tools `export_one_pager`, `set_opportunity_status`,
+`record_opportunity_outcome`, `list_outcomes`.
 
 `mine_domain` returns the run summary inline — per-opportunity ICE, tier, strategic
 filters, eligibility, and token usage — so a driving agent does not have to parse
@@ -194,32 +221,41 @@ markdown or load every full draft to decide what to act on.
 
 ## Workspace layout
 
+Each run separates **results** (what you read) from **trace** (how the pipeline
+got there). Results are a single source of truth: `opportunities.json`.
+
 ```
 <workspace>/                       # ./mining-workspace or $MINER_WORKSPACE
 ├── .am-ids.sqlite3                # transactional AM-ID allocation watermark
 ├── .cache/digests/                # content-hashed KB digests (re-runs are free)
-├── registry.json                  # machine index (rebuilt by reindex)
+├── registry.json                  # machine index across runs (rebuilt by reindex)
+├── lifecycle.json                 # append-only status changes and measured outcomes
 ├── runs/
 │   └── YYYY-MM-DD_<domain-slug>/
-│       ├── run.json               # manifest: status, budget, input, models, usage, timings
-│       ├── run.md                 # human run log
+│       ├── run.json               # manifest: status, input, models, budget, usage, timings
+│       ├── opportunities.json     # THE result: every opportunity, score, eligibility, reasons
 │       ├── summary.json           # compact agent-facing view
-│       ├── context.json           # evidence index, skipped files, context stats
-│       ├── domain_map.json
-│       ├── layers/<layer>.json    # 5 layer analyses
-│       ├── candidate_portfolio.json  # value/diversity plan + prior-idea comparison
-│       ├── drafts/candidate-*.json   # one raw draft per planned candidate
-│       ├── drafts/AM-XXX.v<n>.json   # every draft + critique iteration
-│       ├── scores.json            # validated scores before portfolio policy
-│       ├── ranked.json            # ranked portfolio with eligibility + stats
-│       ├── opportunities.json     # final scored portfolio
-│       ├── report.md              # ranked table, tiers, exclusions, cost
-│       ├── publication/            # staged briefs before terminal publication
-│       └── error.json             # only on failure: stage + diagnosis
+│       ├── report.md              # at-a-glance decisions, pain coverage, ranking, exclusions
+│       ├── one-pager.html         # optional: `automation-miner export` for stakeholders
+│       ├── evaluation.{json,md}   # optional: `automation-miner evaluate`
+│       ├── error.json             # only on failure: stage + diagnosis
+│       ├── publication/           # staged briefs + crash-recovery journal
+│       └── trace/
+│           ├── context.json       # evidence index the briefs cite (S-ids)
+│           ├── input_assessment.json, domain_map.json
+│           ├── layers/<layer>.json        # 5 layer analyses with sized pain points
+│           ├── pain_ledger.json           # pains ranked by code + which candidate covers each
+│           ├── candidate_portfolio.json   # the planned portfolio
+│           ├── drafts/<candidate>.json    # first draft per candidate
+│           ├── critique/AM-XXX.v<n>.json  # every critique round (+ .repair.json)
+│           └── run-log.md                 # phase-by-phase human run log
 └── opps/
     └── <domain-slug>/
         └── AM-XXX-<slug>.md       # self-contained brief, YAML frontmatter
 ```
+
+Runs written before October 2026 (flat layout, plus duplicate `scores.json` and
+`ranked.json`) remain readable.
 
 AM-XXX numbering is global and sequential, continuing from the workspace max.
 
@@ -239,9 +275,64 @@ require Ease ≥ 4; compliance-heavy runs exclude unresolved high-risk items;
 infrastructure maturity limits eligible layers; agent limits cap topology;
 urgent/tight-timeline runs publish the top three by Ease then ICE.
 
+Which of those policies apply is decided once per run and recorded in
+`trace/context.json`. Typed parameters (`--constraint budget=low`,
+`compliance=true`, `timeline=tight`, `agent_limit=2`) always win. Free-text
+`--constraints` are read by a model into the same typed flags, and each flag
+must quote the words that impose it: code discards a clause whose quote is not
+in the text, so "no budget concerns" never switches on the low-budget filter.
+The report's Notes name the source of every active policy, and warn when a
+keyword appears that was not read as binding. If the reading call fails, the
+run falls back to keyword matching and says so.
+
 Opportunities excluded by that policy are **kept**, not deleted — they were drafted,
 critiqued, refined and scored, so each one carries its exclusion reason and appears in
 `summary.json` and in the report's "Excluded by Constraint Policy" section.
+
+## What a good brief looks like
+
+Every statement in a brief is one of three kinds:
+
+- **Observed**: a fact about the subject organization. It traces to an evidence
+  block, and the ids are listed in the brief's Evidence section with source and
+  location.
+- **Domain knowledge**: public, general knowledge such as regulation, industry
+  practice, or standard tools. Used freely; it is what makes a brief expert.
+- **Assumption**: a premise or estimate about the organization that the evidence
+  does not establish. Recorded under *Assumptions* or as an impact-row estimate,
+  with a validation question.
+
+Epistemic status lives in that structure, not in hedges inside the prose. Code
+enforces this: a draft that writes evidence commentary ("inferred from S2…",
+"not explicitly stated") into its prose does not pass a critique round. The exact
+excerpts go back to the refiner. Only fabricated current-state facts, absence
+claims, wrong domain knowledge, and hard-constraint conflicts block publication.
+
+See [docs/VISION.md](docs/VISION.md) for the product intent.
+
+## Evaluating quality
+
+```bash
+uv run automation-miner evaluate <run-id> --no-judge   # deterministic lint only, free
+uv run automation-miner evaluate <run-id>              # + independent judge model
+```
+
+The lint flags reader-facing defects code can prove: evidence commentary in
+prose, double numbering, empty required sections, and garbled template text.
+
+The judge is the `judge` role in `miner.toml` (default: the same cheap flash
+model). It is built to resist grading its own family leniently. One call audits
+every organization-specific claim against the evidence. Code turns the audit
+into the honesty grade and caps the overall grade by it. A second call writes
+weaknesses before grading specificity, insight, actionability, domain expertise,
+and readability, and a third grades the portfolio's diversity and coverage.
+Calibrated against a much stronger reference judge, it lands within 0.3 per run.
+Results go to `evaluation.json` and `evaluation.md` in the run directory, and
+are also available as the `evaluate_run` MCP tool.
+
+`scripts/quality_suite.py` runs three reference cases from `examples/` against a
+real provider and grades them against the bar in
+[docs/quality/00-QUALITY-BAR.md](docs/quality/00-QUALITY-BAR.md).
 
 ## Context budget
 
@@ -274,25 +365,44 @@ api_key_env = "OPENROUTER_API_KEY"
 supports_json_mode = true
 
 [roles]
-mapper        = { provider = "openrouter", model = "anthropic/claude-sonnet-4" }
-layer_analyst = { provider = "openrouter", model = "anthropic/claude-sonnet-4" }
-drafter       = { provider = "openrouter", model = "anthropic/claude-sonnet-4", max_tokens = 16000 }
-critic        = { provider = "openrouter", model = "openai/gpt-4.1" }
-refiner       = { provider = "openrouter", model = "anthropic/claude-sonnet-4" }
-scorer        = { provider = "openrouter", model = "openai/gpt-4.1", temperature = 0.1 }
+mapper        = { provider = "openrouter", model = "deepseek/deepseek-v4-flash" }
+layer_analyst = { provider = "openrouter", model = "deepseek/deepseek-v4-flash" }
+drafter       = { provider = "openrouter", model = "deepseek/deepseek-v4-flash", max_tokens = 24000 }
+critic        = { provider = "openrouter", model = "deepseek/deepseek-v4-flash" }
+refiner       = { provider = "openrouter", model = "deepseek/deepseek-v4-flash" }
+scorer        = { provider = "openrouter", model = "deepseek/deepseek-v4-flash", temperature = 0.1 }
+judge         = { provider = "zai",        model = "glm-5.3-flash" }  # evaluate only
 
 [retry]
 attempts = 4
 
 [concurrency]
-critique = 4
+critique = 8
 score = 4
 
 [budget]
-max_attempts = 70
-max_tokens = 120000
-max_seconds = 1800
+max_attempts = 200
+max_tokens = 1500000
+max_seconds = 2400
 ```
+
+Built-in providers: `openrouter` (`OPENROUTER_API_KEY`), `gemini`
+(`GOOGLE_API_KEY`), and `zai` for Z.ai GLM models (`ZAI_API_KEY`). The `zai`
+default is the GLM Coding Plan endpoint; a pay-as-you-go key needs
+`base_url = "https://api.z.ai/api/paas/v4"` under `[providers.zai]`. The judge
+runs on a different model family from the generator so it does not grade its
+own family's writing.
+
+Per role, `reasoning_effort = "off" | "minimal" | "low" | "medium" | "high"` sets
+OpenRouter's unified reasoning control for reasoning models. OpenRouter-only
+request fields (`reasoning`, provider routing) are sent to OpenRouter only.
+
+Providers stream by default where supported (`stream = true` under
+`[providers.<name>]`). Streaming makes progress visible: an attempt that sends
+no data for `retry.stall_seconds` (default 60; keep-alives don't count) is
+abandoned and retried at once, instead of waiting out `retry.request_seconds`
+(default 300). Reasoning models get generous `max_tokens` per role so thinking
+cannot starve the JSON answer.
 
 Any provider with a `base_url` speaks the OpenAI chat-completions protocol, so
 custom OpenAI-compatible endpoints work too. Env overrides: `MINER_PROVIDER`

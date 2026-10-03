@@ -3,6 +3,7 @@
 from automation_miner.prompts import (
     CRITIC_SYSTEM,
     DRAFTER_SYSTEM,
+    REFINER_SYSTEM,
     DOMAIN_MAP_SYSTEM,
     INPUT_ASSESSMENT_SYSTEM,
     LAYER_ANALYST_SYSTEM,
@@ -73,7 +74,25 @@ def test_strategy_prompts_do_not_turn_recommendations_into_current_state() -> No
 
 def test_critic_requires_structured_grounding_violations() -> None:
     assert "grounding_violations" in CRITIC_SYSTEM
-    assert "prevents publication regardless" in CRITIC_SYSTEM
+    assert "any entry blocks publication" in CRITIC_SYSTEM
+
+
+def test_critic_blocks_only_fabrication_absence_and_wrong_domain_knowledge() -> None:
+    # Correct domain knowledge and recorded assumptions must never block: the
+    # 3.x critic filtered a brief for citing the statutory ArbZG limit.
+    assert "fabricated observed fact" in CRITIC_SYSTEM
+    assert "These are NOT violations" in CRITIC_SYSTEM
+    assert "correct public domain" in CRITIC_SYSTEM
+    assert "writing_issues" in CRITIC_SYSTEM
+
+
+def test_generation_prompts_separate_observed_domain_and_assumed_statements() -> None:
+    for system in (DRAFTER_SYSTEM, REFINER_SYSTEM, CRITIC_SYSTEM):
+        assert "Domain knowledge" in system
+        assert "Assumption:" in system
+    for system in (DRAFTER_SYSTEM, REFINER_SYSTEM):
+        assert "Never write meta-commentary about the evidence" in system
+    assert "inferred: ..." not in DRAFTER_SYSTEM
 
 
 def test_dynamic_artifacts_are_escaped_and_fenced() -> None:
@@ -99,7 +118,10 @@ def test_portfolio_planner_optimizes_value_and_diversity_before_drafting() -> No
     assert "rigid layer quotas" in PORTFOLIO_PLANNER_SYSTEM
     assert "several variants of documentation" in PORTFOLIO_PLANNER_SYSTEM
     assert "every other candidate" in PORTFOLIO_PLANNER_SYSTEM
-    assert "agent=openclaw" in PORTFOLIO_PLANNER_SYSTEM
+    assert "agent=<framework>" in PORTFOLIO_PLANNER_SYSTEM
+    # A concrete example product in the prompt leaked into unrelated briefs.
+    assert "openclaw" not in PORTFOLIO_PLANNER_SYSTEM.casefold()
+    assert "addresses_pains" in PORTFOLIO_PLANNER_SYSTEM
     assert "Existing Documentation Copilot" in prompt
     assert "- agent = openclaw" in prompt
 
@@ -114,3 +136,22 @@ def test_portfolio_planner_optimizes_value_and_diversity_before_drafting() -> No
     assert "Every recognized constraint parameter is binding" in draft
     assert "unknown parameters are advisory context only" in draft
     assert "generic documentation or search idea" in draft
+
+
+def test_precision_rule_reaches_drafter_critic_and_refiner() -> None:
+    from automation_miner.prompts import PRECISION_RULE, critique_prompt, refine_prompt
+
+    draft = candidate_draft_prompt("{}", "{}", "[S1] e")
+    assert PRECISION_RULE in draft
+    assert "success_metrics" in draft
+    assert PRECISION_RULE in critique_prompt("{}", [], "[S1] e")
+    assert PRECISION_RULE in refine_prompt("{}", "{}", "[S1] e")
+
+
+def test_repair_and_verify_prompts_are_narrow() -> None:
+    from automation_miner.prompts import REPAIR_SYSTEM, VERIFIER_SYSTEM, repair_prompt
+
+    assert "change nothing else" in " ".join(REPAIR_SYSTEM.split())
+    assert "Do not re-grade" in " ".join(VERIFIER_SYSTEM.split())
+    prompt = repair_prompt("{}", ['problem: "spend time on all cases equally"'], "", "")
+    assert "spend time on all cases equally" in prompt

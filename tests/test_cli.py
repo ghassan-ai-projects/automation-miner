@@ -124,7 +124,8 @@ def test_mine_reports_context_cost_and_tiers(workspace: Path, capsys) -> None:
     assert "Context:" in out and "chunks" in out and "% of budget" in out
     assert "Portfolio: avg ICE" in out
     assert "Cost:" in out and "model calls" in out
-    assert "high" in out  # tier column
+    # One-liner input caps confidence at 2: mock 4/4/4 becomes 4/2/4 = ICE 32.
+    assert "low" in out  # tier column
 
 
 def test_mine_reports_filtered_opportunities(workspace: Path, capsys) -> None:
@@ -150,7 +151,7 @@ def test_mine_json_output(workspace: Path, capsys) -> None:
     assert rc == 0
     payload = json.loads(capsys.readouterr().out)
     assert payload["stats"]["published"] == 5
-    assert payload["opportunities"][0]["tier"] == "high"
+    assert payload["opportunities"][0]["tier"] == "low"
 
 
 def test_mine_accepts_repeatable_dynamic_constraints(workspace: Path, capsys) -> None:
@@ -224,7 +225,7 @@ def test_readers_command_json(workspace: Path, capsys) -> None:
 def test_list_filters_by_tier(workspace: Path, capsys) -> None:
     _mine(workspace)
     capsys.readouterr()
-    assert main(["list", "--tier", "high", "--workspace", str(workspace)]) == 0
+    assert main(["list", "--tier", "low", "--workspace", str(workspace)]) == 0
     assert "5 entries" in capsys.readouterr().out
     assert main(["list", "--tier", "vision", "--workspace", str(workspace)]) == 0
     assert "0 entries" in capsys.readouterr().out
@@ -236,7 +237,7 @@ def test_list_json_output(workspace: Path, capsys) -> None:
     assert main(["list", "--json", "--workspace", str(workspace)]) == 0
     payload = json.loads(capsys.readouterr().out)
     assert payload["count"] == 5
-    assert payload["entries"][0]["tr"] == "high"
+    assert payload["entries"][0]["tr"] == "low"
 
 
 def test_version_flag(capsys) -> None:
@@ -244,3 +245,31 @@ def test_version_flag(capsys) -> None:
         main(["--version"])
     assert exc.value.code == 0
     assert "automation-miner" in capsys.readouterr().out
+
+
+def test_evaluate_lints_and_judges_a_run(workspace: Path, capsys) -> None:
+    run_id = _mine(workspace)
+    capsys.readouterr()
+    rc = main(["evaluate", run_id, "--dry-run", "--json", "--workspace", str(workspace)])
+    assert rc == 0
+    evaluation = json.loads(capsys.readouterr().out)
+    assert evaluation["published"] == 5
+    assert evaluation["lint_errors"] == 0
+    assert evaluation["means"]["overall"] == 4.0
+    assert (workspace / "runs" / run_id / "evaluation.md").is_file()
+
+
+def test_evaluate_without_judge_is_lint_only(workspace: Path, capsys) -> None:
+    run_id = _mine(workspace)
+    capsys.readouterr()
+    rc = main(["evaluate", run_id, "--no-judge", "--workspace", str(workspace)])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "**Lint:** 0 errors" in out
+    assert "Judge means" not in out
+
+
+def test_evaluate_unknown_run_fails(workspace: Path, capsys) -> None:
+    rc = main(["evaluate", "2026-01-01_missing", "--no-judge", "--workspace", str(workspace)])
+    assert rc == 1
+    assert "No completed run" in capsys.readouterr().err

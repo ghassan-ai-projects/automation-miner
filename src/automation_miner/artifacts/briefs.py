@@ -1,127 +1,184 @@
 """Opportunity brief markdown renderer — spec 01 / sample 08a format, extended.
 
-The brief used to render only the draft. Everything the pipeline computed about
-*quality* — the per-factor score rationale, the critic's score, how many refine
-rounds it took, which constraint overrides fired, which code calibrations were
-applied, and which evidence the draft rests on — was persisted to JSON and then
-never shown. A published brief could not justify its own ICE score.
-
-Two sections close that gap: **Scoring & Confidence** and **Evidence**.
+Reading order follows how a process owner decides; the computed quality
+sections come from ``brief_sections``.
 """
 
 from __future__ import annotations
 
-import json
-import re
+from collections.abc import Mapping
 from datetime import datetime
 
-from automation_miner.schemas import InputQuality, Opportunity
-from automation_miner.scoring import active_filters
+from automation_miner.artifacts.brief_sections import (
+    bullets,
+    cell,
+    evidence_section,
+    numbered,
+    scoring_section,
+    derived_figures,
+    validation_criteria,
+    validation_section,
+    yaml_scalar,
+    is_discovery_hypothesis,
+    title_slug,
+)
+from automation_miner.schemas import LAYER_TITLES, InputQuality, Opportunity
 
-FILTER_LABELS: dict[str, str] = {
-    "low_hanging": "low-hanging fruit",
-    "high_value": "high-value",
-    "vision": "vision/moonshot",
-}
-
-
-def title_slug(title: str) -> str:
-    """Short slug for the brief filename."""
-    text = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")
-    return text[:60].strip("-") or "opportunity"
-
-
-def _yaml_scalar(text: str) -> str:
-    """JSON strings are valid YAML scalars and preserve quotes, slashes, and newlines."""
-    return json.dumps(text, ensure_ascii=False)
+__all__ = ["is_discovery_hypothesis", "render_brief", "title_slug"]
 
 
-def _cell(text: str) -> str:
-    return text.replace("|", "\\|").replace("\r\n", "<br>").replace("\n", "<br>")
+_FRONTMATTER = """---
+am-id: "{am_id}"
+title: {title}
+domain: {domain}
+layer: "{layer}"
+status: "{status}"
+ice-score: {ice}
+tier: "{tier}"
+impact: {impact}
+confidence: {confidence}
+ease: {ease}
+effort: "{effort}"
+risk: "{risk}"
+critique: {critique}
+iterations: {iterations}
+eligibility: "{eligibility}"
+artifact-type: "{artifact_type}"
+agent-count: {agent_count}
+created: "{date}"
+updated: "{date}"
+source: {source}
+tags: [automation, {layer}, {domain_slug}]
+---
+"""
+
+_PROCESS = """## Impact Analysis
+
+| Dimension | Current State | Automated State | Improvement | Basis |
+|-----------|--------------|----------------|-------------|-------|
+{impact_rows}
+{derived}
+## Process Details
+
+### Inputs
+{inputs}
+
+### Steps
+{steps}
+
+### Outputs
+{outputs}
+
+### Human-in-the-Loop Points
+{hitl}
+
+## Feasibility Assessment
+
+### Technical Requirements
+{requirements}
+
+### Dependencies
+{dependencies}
+
+### Constraints
+{constraints}
+"""
+
+_PLAN = """## Implementation Path
+
+### Phase 1: MVP (1-2 weeks)
+{mvp}
+
+### Phase 2: Expansion (2-4 weeks)
+{expansion}
+
+### Phase 3: Autonomy (4-8 weeks)
+{autonomy}
+
+## Risk & Mitigations
+
+| Risk | Likelihood | Impact | Mitigation |
+|------|-----------|--------|------------|
+{risk_rows}
+"""
+
+_FOOTER = """---
+
+## Self-Improvement
+
+Lifecycle: identified → evaluating → designing → implementing → live.
+Move it with `automation-miner status {am_id} <status>`; record each measured
+result with `automation-miner outcome {am_id} <measure #> <value>`.
+
+Success measures:
+{criteria}
+"""
+
+_HYPOTHESIS_NOTE = (
+    "\n>\n> **Discovery Hypothesis** — a promising direction, not yet an "
+    "implementation brief. Answer the questions under *Validate First* "
+    "before committing build effort."
+)
 
 
-def _bullets(items: list[str]) -> str:
-    return "\n".join(f"- {item}" for item in items) if items else "- (none identified)"
+def _frontmatter(opp: Opportunity, run_id: str, date: str, artifact_type: str) -> str:
+    d, s = opp.draft, opp.score
+    return _FRONTMATTER.format(
+        am_id=opp.am_id, title=yaml_scalar(d.title), domain=yaml_scalar(opp.domain),
+        layer=d.layer.value, status=opp.status.value, ice=opp.ice, tier=opp.tier.value,
+        impact=s.impact, confidence=s.confidence, ease=s.ease, effort=d.effort.value,
+        risk=d.risk_level.value, critique=opp.critique_overall, iterations=opp.iterations,
+        eligibility=opp.eligibility.value, artifact_type=artifact_type,
+        agent_count=d.agent_count, date=date, source=yaml_scalar(run_id),
+        domain_slug=opp.domain_slug,
+    )
 
 
-def _numbered(items: list[str]) -> str:
-    cleaned = [re.sub(r"^\s*\d+[.)]\s*", "", item) for item in items]
-    return "\n".join(f"{i}. {item}" for i, item in enumerate(cleaned, 1))
-
-
-def is_discovery_hypothesis(
-    opp: Opportunity, input_quality: InputQuality | None = None
-) -> bool:
-    """Frame uncertain output, including all thin-input output, as discovery work."""
+def _overview(opp: Opportunity, hypothesis: bool) -> str:
+    """Title, headline score, problem, and proposal — what a reader decides on."""
+    d, s = opp.draft, opp.score
+    headline = (
+        f"> **ICE {opp.ice} · {opp.tier.label}** — Impact {s.impact} × Confidence "
+        f"{s.confidence} × Ease {s.ease} · {LAYER_TITLES[d.layer]} · "
+        f"effort {d.effort.value} · risk {d.risk_level.value}"
+    ) + (_HYPOTHESIS_NOTE if hypothesis else "")
+    agents = f"{d.agent_count} agent{'s' if d.agent_count != 1 else ''}"
+    early = f"\n{validation_section(opp, 'Validate First')}" if hypothesis else ""
     return (
-        input_quality is not None and input_quality.level == "thin"
-    ) or opp.score.confidence <= 2 or not opp.draft.evidence_refs
+        f"# {opp.am_id}: {d.title}\n\n{headline}\n\n"
+        f"## Problem Statement\n\n{d.problem}\n\n"
+        f"## Proposed Automation\n\n{d.proposed_automation}\n\n"
+        f"**Agent topology:** {agents} — {d.agent_topology}\n{early}"
+    )
 
 
-def _scoring_section(opp: Opportunity) -> str:
-    """Per-factor rationale plus every automated judgement applied to the score."""
-    s = opp.score
-    lines = [
-        f"**ICE {opp.ice}** — {opp.tier.label} · Impact {s.impact} × "
-        f"Confidence {s.confidence} × Ease {s.ease}",
-        "",
-        f"- **Impact {s.impact}** — {s.impact_rationale}",
-        f"- **Confidence {s.confidence}** — {s.confidence_rationale}",
-        f"- **Ease {s.ease}** — {s.ease_rationale}",
-        "",
-        f"Critic score **{opp.critique_overall}/10** after "
-        f"{opp.iterations} iteration{'s' if opp.iterations != 1 else ''}.",
-    ]
-    if flags := active_filters(opp):
-        labels = ", ".join(FILTER_LABELS.get(key, key) for key in flags)
-        lines += ["", f"Strategic filters: {labels}."]
-    if opp.calibration:
-        lines += [
-            "",
-            "Automated calibration (code cross-checked the proposed factors against "
-            "this draft's own effort, impact and risk estimates):",
-            "",
-            *[f"- {note}" for note in opp.calibration],
-        ]
-    if opp.overrides_applied:
-        lines += [
-            "",
-            "Constraint overrides applied:",
-            "",
-            *[f"- {note}" for note in opp.overrides_applied],
-        ]
-    if not opp.published:
-        lines += [
-            "",
-            "> **Excluded from the published portfolio for this run:**",
-            *[f"> - {reason}" for reason in opp.exclusion_reasons],
-        ]
-    return "\n".join(lines)
+def _process(opp: Opportunity) -> str:
+    d = opp.draft
+    impact_rows = "\n".join(
+        f"| {cell(r.dimension)} | {cell(r.current)} | {cell(r.automated)} | "
+        f"{cell(r.improvement)} | {cell(r.basis)}{' *(estimate)*' if r.assumption else ''} |"
+        for r in d.impact_analysis
+    ) or "| — | — | — | — | — |"
+    return _PROCESS.format(
+        impact_rows=impact_rows, derived=derived_figures(d), inputs=bullets(d.inputs),
+        steps=numbered(d.steps),
+        outputs=bullets(d.outputs), hitl=bullets(d.hitl_points),
+        requirements=bullets(d.technical_requirements), dependencies=bullets(d.dependencies),
+        constraints=bullets(d.constraints),
+    )
 
 
-def _evidence_section(opp: Opportunity) -> str:
-    """Which evidence ids the draft cites, and any that did not resolve."""
-    if not opp.draft.evidence_refs:
-        return (
-            "No evidence ids were cited. Treat the claims above as inference rather "
-            "than grounded findings."
-        )
-
-    lines = [
-        "Grounded in the following evidence from the source material "
-        f"(ids refer to `context.json` in run `{opp.domain_slug}`):",
-        "",
-        "- " + ", ".join(f"`{ref}`" for ref in opp.draft.evidence_refs),
-    ]
-    if opp.unresolved_refs:
-        lines += [
-            "",
-            "> **Unverified citations:** "
-            + ", ".join(f"`{ref}`" for ref in opp.unresolved_refs)
-            + " — these ids do not exist in the run's evidence index, so the claims "
-            "attached to them are unsupported.",
-        ]
-    return "\n".join(lines)
+def _plan(opp: Opportunity) -> str:
+    d = opp.draft
+    risk_rows = "\n".join(
+        f"| {cell(r.risk)} | {r.likelihood.value.upper()[0]} | "
+        f"{r.impact.value.upper()[0]} | {cell(r.mitigation)} |"
+        for r in d.risks
+    ) or "| — | | | |"
+    return _PLAN.format(
+        mvp=bullets(d.implementation.mvp), expansion=bullets(d.implementation.expansion),
+        autonomy=bullets(d.implementation.autonomy), risk_rows=risk_rows,
+    )
 
 
 def render_brief(
@@ -129,161 +186,25 @@ def render_brief(
     run_id: str,
     date: str | None = None,
     input_quality: InputQuality | None = None,
+    evidence_labels: Mapping[str, str] | None = None,
 ) -> str:
-    """Render one AM-XXX brief as self-contained markdown with YAML frontmatter."""
-    d = opp.draft
-    date = date or f"{datetime.now():%Y-%m-%d}"
-    tags = f"[automation, {d.layer.value}, {opp.domain_slug}]"
+    """Render one AM-XXX brief as self-contained markdown with YAML frontmatter.
+
+    Reading order follows how a process owner decides: what is broken, what we
+    would build, what it is worth, how it works, how to get there, what could go
+    wrong — then the audit trail (scoring, evidence). A discovery hypothesis
+    moves its validation questions directly under the proposal.
+    """
     hypothesis = is_discovery_hypothesis(opp, input_quality)
     artifact_type = "discovery_hypothesis" if hypothesis else "opportunity_brief"
-    framing = (
-        ""
-        if not hypothesis
-        else f"> **Discovery Hypothesis**  \n"
-        "Validate the current state and assumptions before treating this as an "
-        "implementation brief.\n\n"
-        "### Validate First\n"
-        f"{_bullets(d.validation_questions)}\n"
-    )
-
-    impact_rows = "\n".join(
-        f"| {_cell(r.dimension)} | {_cell(r.current)} | {_cell(r.automated)} | "
-        f"{_cell(r.improvement)} | {_cell(r.basis)}"
-        f"{' *(assumption)*' if r.assumption else ''} |"
-        for r in d.impact_analysis
-    ) or "| — | — | — | — | — |"
-    risk_rows = "\n".join(
-        f"| {_cell(r.risk)} | {r.likelihood.value.upper()[0]} | "
-        f"{r.impact.value.upper()[0]} | {_cell(r.mitigation)} |"
-        for r in d.risks
-    ) or "| — | | | |"
-
-    return f"""---
-am-id: "{opp.am_id}"
-title: {_yaml_scalar(d.title)}
-domain: {_yaml_scalar(opp.domain)}
-layer: "{d.layer.value}"
-status: "{opp.status.value}"
-ice-score: {opp.ice}
-tier: "{opp.tier.value}"
-impact: {opp.score.impact}
-confidence: {opp.score.confidence}
-ease: {opp.score.ease}
-effort: "{d.effort.value}"
-risk: "{d.risk_level.value}"
-critique: {opp.critique_overall}
-iterations: {opp.iterations}
-eligibility: "{opp.eligibility.value}"
-artifact-type: "{artifact_type}"
-agent-count: {d.agent_count}
-created: "{date}"
-updated: "{date}"
-source: {_yaml_scalar(run_id)}
-tags: {tags}
----
-
-# {opp.am_id}: {d.title}
-
-{framing}
-
-## Problem Statement
-
-{d.problem}
-
-## Proposed Automation
-
-{d.proposed_automation}
-
-**Agent topology:** {d.agent_count} agent{"s" if d.agent_count != 1 else ""} — {d.agent_topology}
-
-## Scoring & Confidence
-
-{_scoring_section(opp)}
-
-## Process Details
-
-### Inputs
-{_bullets(d.inputs)}
-
-### Steps
-{_numbered(d.steps)}
-
-### Outputs
-{_bullets(d.outputs)}
-
-### Human-in-the-Loop Points
-{_bullets(d.hitl_points)}
-
-## Feasibility Assessment
-
-### Technical Requirements
-{_bullets(d.technical_requirements)}
-
-### Dependencies
-{_bullets(d.dependencies)}
-
-### Constraints
-{_bullets(d.constraints)}
-
-## Assumptions and Validation
-
-### Assumptions
-{_bullets(d.assumptions)}
-
-### Validation Questions
-{_bullets(d.validation_questions)}
-
-## Impact Analysis
-
-| Dimension | Current State | Automated State | Improvement | Basis |
-|-----------|--------------|----------------|-------------|-------|
-{impact_rows}
-
-## Implementation Path
-
-### Phase 1: MVP (1-2 weeks)
-{_bullets(d.implementation.mvp)}
-
-### Phase 2: Expansion (2-4 weeks)
-{_bullets(d.implementation.expansion)}
-
-### Phase 3: Autonomy (4-8 weeks)
-{_bullets(d.implementation.autonomy)}
-
-## Risk & Mitigations
-
-| Risk | Likelihood | Impact | Mitigation |
-|------|-----------|--------|------------|
-{risk_rows}
-
-## Evidence
-
-{_evidence_section(opp)}
-
----
-
-## Self-Improvement
-
-This opportunity was generated by the Automation Miner engine. Track its lifecycle through the pipeline:
-
-- [ ] **Identified** — opportunity brief created
-- [ ] **Evaluating** — domain expert is validating problem/relevance
-- [ ] **Designing** — implementation plan complete
-- [ ] **Implementing** — prototype or MVP is being built
-- [ ] **Live** — running in production
-- [ ] **Measured** — actual impact vs. projected impact
-
-Validation criteria:
-- Actual time saved vs. the {_first_improvement(opp)} projected above
-- Error rate improvement vs. estimate
-- User satisfaction with automation
-- What was missed in the analysis?
-"""
-
-
-def _first_improvement(opp: Opportunity) -> str:
-    """Quote the draft's own headline improvement, so validation has a target."""
-    for row in opp.draft.impact_analysis:
-        if row.improvement.strip():
-            return f"{row.improvement.strip()} {row.dimension.strip().lower()} improvement"
-    return "projected"
+    late = "" if hypothesis else f"{validation_section(opp, 'Assumptions and Validation')}\n"
+    parts = [
+        _frontmatter(opp, run_id, date or f"{datetime.now():%Y-%m-%d}", artifact_type),
+        _overview(opp, hypothesis),
+        _process(opp),
+        _plan(opp),
+        f"{late}## Scoring & Confidence\n\n{scoring_section(opp)}\n",
+        f"## Evidence\n\n{evidence_section(opp, run_id, evidence_labels)}\n",
+        _FOOTER.format(criteria=validation_criteria(opp), am_id=opp.am_id),
+    ]
+    return "\n".join(parts)

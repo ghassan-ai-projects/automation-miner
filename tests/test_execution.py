@@ -89,10 +89,26 @@ def test_deadline_is_checked_after_mock_work(monkeypatch: pytest.MonkeyPatch) ->
     model = MinerModel(load_config(None), dry_run=True)
     execution = RunExecutionContext(
         "2026-08-28_slow-mock",
-        RunBudget(max_attempts=2, max_tokens=10_000, max_seconds=0.001),
+        RunBudget(max_attempts=2, max_tokens=100_000, max_seconds=0.001),
     )
     try:
         with pytest.raises(BudgetExceeded, match="max_seconds"):
             model.chat("mapper", "", "input", execution=execution)
     finally:
         model.close()
+
+
+def test_default_budget_admits_parallel_drafting_after_a_rich_preamble() -> None:
+    """Regression: the old 120k default rejected every real run at drafting.
+
+    Measured: a three-file KB had used ~100k tokens before portfolio planning,
+    and eight drafters each reserve prompt + max_tokens (16k) concurrently.
+    """
+    from automation_miner.schemas import RunBudget
+
+    context = RunExecutionContext("run", RunBudget())
+    for _ in range(9):
+        admission = context.admit_attempt(9_000, 6_000)
+        context.record_tokens(9_000, 2_000, admission)
+    reservations = [context.admit_attempt(15_000, 16_000) for _ in range(8)]
+    assert len(reservations) == 8

@@ -19,44 +19,43 @@ _FENCE = re.compile(r"^\s*(```|~~~)")
 _MARKDOWN_SUFFIXES = {".md", ".markdown", ".mdx"}
 
 
+def _update_fence(line: str, fence: str | None) -> str | None:
+    """The open code-fence marker after ``line``, or None outside a fence."""
+    opener = _FENCE.match(line)
+    if not opener:
+        return fence
+    marker = opener.group(1)
+    if fence is None:
+        return marker
+    return None if marker == fence else fence
+
+
+def _push_heading(stack: list[tuple[int, str]], level: int, title: str) -> str:
+    """Update the heading path for a new heading and return its locator."""
+    while stack and stack[-1][0] >= level:
+        stack.pop()
+    stack.append((level, title))
+    return " > ".join(f"{'#' * lv} {text}" for lv, text in stack)
+
+
 def split_markdown(text: str) -> list[Segment]:
     """Segment markdown by heading, tracking the full heading path per section.
 
     Fenced code blocks are respected so a ``#`` comment inside a shell snippet
     is not mistaken for a heading.
     """
-    segments: list[Segment] = []
+    sections: list[tuple[str, list[str]]] = [("", [])]
     stack: list[tuple[int, str]] = []
-    buffer: list[str] = []
-    locator = ""
     fence: str | None = None
-
-    def flush() -> None:
-        body = "\n".join(buffer).strip()
-        if body:
-            segments.append(Segment(text=body, locator=locator))
-        buffer.clear()
-
     for line in text.split("\n"):
-        opener = _FENCE.match(line)
-        if opener:
-            marker = opener.group(1)
-            if fence is None:
-                fence = marker
-            elif marker == fence:
-                fence = None
-        if fence is None:
-            heading = _ATX.match(line)
-            if heading:
-                flush()
-                level = len(heading.group(1))
-                while stack and stack[-1][0] >= level:
-                    stack.pop()
-                stack.append((level, heading.group(2).strip()))
-                locator = " > ".join(f"{'#' * lv} {title}" for lv, title in stack)
-        buffer.append(line)
-    flush()
-    return segments
+        fence = _update_fence(line, fence)
+        heading = _ATX.match(line) if fence is None else None
+        if heading:
+            locator = _push_heading(stack, len(heading.group(1)), heading.group(2).strip())
+            sections.append((locator, []))
+        sections[-1][1].append(line)
+    bodies = (("\n".join(lines).strip(), locator) for locator, lines in sections)
+    return [Segment(text=body, locator=locator) for body, locator in bodies if body]
 
 
 class TextReader(BaseReader):

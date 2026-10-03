@@ -1,0 +1,24 @@
+# Quality-suite configuration: every generation role runs on the cheap
+# deepseek flash model. The judge runs on a different model family (Z.ai
+# GLM-5.3 Flash), so it does not grade its own family's writing; its
+# thresholds are calibrated against a stronger reference judge (see
+# docs/quality/00-QUALITY-BAR.md). The zai provider is built in and reads
+# ZAI_API_KEY; GLM Coding Plan keys use the coding endpoint (the default).
+
+[providers.openrouter]
+base_url = "https://openrouter.ai/api/v1"
+api_key_env = "OPENROUTER_API_KEY"
+supports_json_mode = true
+
+[roles]
+mapper        = { provider = "openrouter", model = "deepseek/deepseek-v4-flash" }
+layer_analyst = { provider = "openrouter", model = "deepseek/deepseek-v4-flash" }
+drafter       = { provider = "openrouter", model = "deepseek/deepseek-v4-flash" }
+critic        = { provider = "openrouter", model = "deepseek/deepseek-v4-flash" }
+refiner       = { provider = "openrouter", model = "deepseek/deepseek-v4-flash" }
+scorer        = { provider = "openrouter", model = "deepseek/deepseek-v4-flash" }
+judge         = { provider = "zai",        model = "glm-5.3-flash" }
+
+[concurrency]
+critique = 8
+score = 4

@@ -28,8 +28,8 @@ from automation_miner.readers.registry import (
     DEFAULT_MAX_FILE_BYTES,
     ReaderInfo,
     ReaderRegistry,
-    build_registry,
 )
+from automation_miner.readers.loading import build_registry
 from automation_miner.readers.structured import JsonReader, YamlReader
 from automation_miner.readers.tabular import CsvReader, XlsxReader
 from automation_miner.readers.text import HtmlReader, TextReader, split_markdown

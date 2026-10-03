@@ -31,6 +31,7 @@ class MinerState(TypedDict, total=False):
     analysis_mode: Literal["operational", "strategy"]
     start_ts: float
     stage_seconds: dict[str, float]
+    resume: bool
 
     # transient (Send fan-out payloads)
     layer: str
@@ -42,6 +43,7 @@ class MinerState(TypedDict, total=False):
     input_assessment: JsonObject
     domain_map: JsonObject
     layer_analyses: Annotated[list[JsonObject], operator.add]
+    pain_ledger: list[JsonObject]
     candidates: list[JsonObject]
     drafts: Annotated[list[JsonObject], operator.add]
     refined: list[JsonObject]

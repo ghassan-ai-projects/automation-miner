@@ -32,13 +32,10 @@ evidence instead of vanishing.
 
 from __future__ import annotations
 
-import importlib
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, cast
 
 from automation_miner.readers.base import (
-    Availability,
     MediaType,
     Reader,
     ReaderError,
@@ -162,45 +159,15 @@ class ReaderRegistry:
 
     def read(self, path: Path) -> SourceDocument:
         """Extract one file. Raises :class:`ReaderError` with an actionable reason."""
-        try:
-            size = path.stat().st_size
-        except OSError as exc:
-            raise ReaderError(f"cannot stat file: {exc}") from exc
-        if size == 0:
-            raise ReaderError("file is empty")
-        if size > self.max_file_bytes:
-            raise ReaderError(
-                f"file is {size:,} bytes, over the {self.max_file_bytes:,} byte limit "
-                "(raise readers.max_file_bytes to include it)"
-            )
-
-        reader = self.reader_for(path)
-        fallback_note = ""
+        _check_size(path, self.max_file_bytes)
+        reader, fallback_note = self.reader_for(path), ""
         if reader is None:
-            suffix = path.suffix.lower()
-            label = suffix or "extensionless"
-            if extra := _EXTRA_FOR_SUFFIX.get(suffix):
-                raise ReaderError(
-                    f"no reader for {label} files — enable it with: uv sync --extra {extra}"
-                )
-            if suffix in NEVER_TEXT:
-                raise ReaderError(f"no reader for {label} files (binary format)")
-            if not self.fallback_text:
-                raise ReaderError(f"no reader registered for {label} files")
-            try:
-                with path.open("rb") as handle:
-                    head = handle.read(4096)
-            except OSError as exc:
-                raise ReaderError(f"cannot read file: {exc}") from exc
-            if looks_binary(head):
-                raise ReaderError(f"no reader for {label} files and the content is binary")
+            _check_fallback(path, self.fallback_text)
             reader = self.registrations["text"].reader
-            fallback_note = f"no reader for {label}; read as text"
-
+            fallback_note = f"no reader for {_label(path)}; read as text"
         availability = reader.available()
         if not availability.ok:
             raise ReaderError(f"{reader.name} reader unavailable: {availability.reason}")
-
         document = reader.read(path)
         if fallback_note:
             document.meta["fallback"] = fallback_note
@@ -245,125 +212,37 @@ def _validate(reader: object) -> str:
     return ""
 
 
-def _load_factory(target: str) -> Any:
-    """Import ``module:attr`` or ``module.attr`` and return the object."""
-    if ":" in target:
-        module_name, _, attribute = target.partition(":")
-    else:
-        module_name, _, attribute = target.rpartition(".")
-    if not module_name or not attribute:
-        raise ImportError(f"{target!r} is not a module:attribute path")
-    module = importlib.import_module(module_name)
+def _label(path: Path) -> str:
+    return path.suffix.lower() or "extensionless"
+
+
+def _check_size(path: Path, limit: int) -> None:
     try:
-        return getattr(module, attribute)
-    except AttributeError as exc:
-        raise ImportError(f"{module_name!r} has no attribute {attribute!r}") from exc
+        size = path.stat().st_size
+    except OSError as exc:
+        raise ReaderError(f"cannot stat file: {exc}") from exc
+    if size == 0:
+        raise ReaderError("file is empty")
+    if size > limit:
+        raise ReaderError(
+            f"file is {size:,} bytes, over the {limit:,} byte limit "
+            "(raise readers.max_file_bytes to include it)"
+        )
 
 
-def _instantiate(factory: Any, options: dict[str, Any]) -> Reader:
-    """Build a reader from a class or zero-argument callable."""
-    if isinstance(factory, type):
-        try:
-            return cast(Reader, factory(**options))
-        except TypeError:
-            return cast(Reader, factory())
-    if callable(factory):
-        return cast(Reader, factory())
-    return cast(Reader, factory)  # already an instance
-
-
-def build_registry(config: dict[str, Any] | None = None) -> ReaderRegistry:
-    """Assemble the effective registry: built-ins, entry points, then config."""
-    settings = dict(config or {})
-    disabled = {str(n).lower() for n in settings.get("disabled", []) or []}
-    enabled = settings.get("enabled")
-    allow = {str(n).lower() for n in enabled} if enabled else None
-
-    registry = ReaderRegistry(
-        max_file_bytes=int(settings.get("max_file_bytes", DEFAULT_MAX_FILE_BYTES)),
-        fallback_text=bool(settings.get("fallback_text", True)),
-    )
-    # A workspace-wide encoding override applies to every reader that decodes text.
-    shared: dict[str, Any] = {}
-    if encoding := str(settings.get("encoding", "") or ""):
-        shared["encoding"] = encoding
-    per_reader = {
-        key: {**shared, **value}
-        for key, value in settings.items()
-        if key not in _RESERVED and isinstance(value, dict)
-    }
-
-    def wanted(name: str) -> bool:
-        lowered = name.lower()
-        return lowered not in disabled and (allow is None or lowered in allow)
-
-    for cls in BUILTIN_READERS:
-        name = getattr(cls, "name", cls.__name__)
-        if wanted(name):
-            options = per_reader.get(name, dict(shared))
-            registry.register(cls(**options), priority=0, source="builtin")
-
-    for name, reader, error in _discover_entry_points():
-        if error:
-            registry.errors.append(error)
-        elif reader is not None and wanted(name):
-            registry.register(reader, priority=10, source="entry-point")
-
-    for index, entry in enumerate(settings.get("custom", []) or [], 1):
-        if not isinstance(entry, dict):
-            registry.errors.append(f"readers.custom[{index}] is not a table")
-            continue
-        target = str(entry.get("factory", "")).strip()
-        if not target:
-            registry.errors.append(f"readers.custom[{index}] has no 'factory'")
-            continue
-        try:
-            factory = _load_factory(target)
-            options = {
-                k: v for k, v in entry.items() if k not in {"factory", "suffixes", "name"}
-            }
-            reader = _instantiate(factory, options)
-        except Exception as exc:
-            registry.errors.append(f"readers.custom[{index}] {target!r} failed to load: {exc}")
-            continue
-        if suffixes := entry.get("suffixes"):
-            reader.suffixes = tuple(str(s).lower() for s in suffixes)
-        if name := entry.get("name"):
-            reader.name = str(name)
-        if wanted(getattr(reader, "name", "")):
-            registry.register(reader, priority=20, source="miner.toml")
-
-    # The text reader backs the non-binary fallback path, so it must always exist.
-    if "text" not in registry.registrations:
-        registry.register(TextReader(), priority=-1, source="builtin (fallback)")
-    return registry
-
-
-def _discover_entry_points() -> list[tuple[str, Reader | None, str]]:
-    """Load third-party readers, converting failures into reportable errors."""
-    from importlib.metadata import entry_points
-
-    found: list[tuple[str, Reader | None, str]] = []
+def _check_fallback(path: Path, fallback_text: bool) -> None:
+    """Raise unless a file with no registered reader may be read as plain text."""
+    suffix, label = path.suffix.lower(), _label(path)
+    if extra := _EXTRA_FOR_SUFFIX.get(suffix):
+        raise ReaderError(f"no reader for {label} files — enable it with: uv sync --extra {extra}")
+    if suffix in NEVER_TEXT:
+        raise ReaderError(f"no reader for {label} files (binary format)")
+    if not fallback_text:
+        raise ReaderError(f"no reader registered for {label} files")
     try:
-        points = entry_points(group=ENTRY_POINT_GROUP)
-    except Exception as exc:
-        return [("", None, f"entry-point discovery failed: {exc}")]
-    for point in points:
-        try:
-            reader = _instantiate(point.load(), {})
-        except Exception as exc:
-            found.append((point.name, None, f"entry-point {point.name!r} failed to load: {exc}"))
-            continue
-        found.append((getattr(reader, "name", point.name), reader, ""))
-    return found
-
-
-__all__ = [
-    "BUILTIN_READERS",
-    "ENTRY_POINT_GROUP",
-    "Availability",
-    "ReaderError",
-    "ReaderInfo",
-    "ReaderRegistry",
-    "build_registry",
-]
+        with path.open("rb") as handle:
+            head = handle.read(4096)
+    except OSError as exc:
+        raise ReaderError(f"cannot read file: {exc}") from exc
+    if looks_binary(head):
+        raise ReaderError(f"no reader for {label} files and the content is binary")

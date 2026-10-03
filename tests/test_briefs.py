@@ -108,7 +108,20 @@ def test_brief_strips_model_numbering_and_frames_low_confidence_as_hypothesis() 
 
     assert 'artifact-type: "discovery_hypothesis"' in text
     assert "> **Discovery Hypothesis**" in text
-    assert "### Validate First" in text
+    assert "## Validate First" in text
+    assert text.index("## Validate First") < text.index("## Impact Analysis")
+    assert "## Assumptions and Validation" not in text
     assert "1. 1." not in text
     assert "1. Extract the form" in text
     assert "2. Validate the fields" in text
+
+
+def test_brief_names_evidence_sources_and_measures_its_own_projections() -> None:
+    opportunity = make_opportunity("AM-010", evidence_refs=["S1"])
+    text = render_brief(
+        opportunity, "run", evidence_labels={"S1": "sop.md # Intake procedure"}
+    )
+    assert "- `S1` — sop.md # Intake procedure" in text
+    assert "measured result vs. projected" in text
+    assert "Actual time saved vs. the" not in text
+    assert "## Assumptions and Validation" in text
