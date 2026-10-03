@@ -40,6 +40,8 @@ mining-workspace/
 
 # Local runtime configuration
 miner.toml
+# The quality suite's config names env vars only; it holds no secrets.
+!examples/miner.toml
 config.toml
 
 # PyInstaller
