@@ -130,7 +130,7 @@ class FailureRecorder:
     def _report(self) -> str:
         domain = str(self.manifest.get("domain", self.run_dir.name))
         return (
-            f"# Automation Mining Report — {domain}\n\n"
+            f"# Automation Mining Report: {domain}\n\n"
             f"> **Run:** `{self.run_dir.name}`  \n"
             f"> **Status:** {self.status}  \n"
             "> **Publication:** pending  \n"

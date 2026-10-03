@@ -34,7 +34,6 @@ if TYPE_CHECKING:
     from automation_miner.models.client import MinerModel, RunScopedModel
 
 
-
 def slugify(text: str) -> str:
     """Domain slug: lowercase, hyphens for spaces, special chars removed."""
     text = re.sub(r"\(.*?\)", "", text.lower())
@@ -69,6 +68,8 @@ class PacketSource:
     cache_root: Path | None = None
     reader_errors: list[str] = field(default_factory=list)
     preflight_callback: Callable[[InputQuality], None] | None = None
+    # The input's own name (file stem, folder name); the slug follows it when set.
+    slug_name: str = ""
 
 
 @dataclass
@@ -143,7 +144,7 @@ def build_packet(source: PacketSource) -> ContextPacket:
     cleaned = clean_domain(source.domain)
     return ContextPacket(
         domain=cleaned,
-        domain_slug=slugify(cleaned),
+        domain_slug=slugify(source.slug_name or cleaned),
         constraints=source.constraints,
         source_kind=source.source_kind,
         overview=fit_text(render_chunks(fit.chunks), source.budget.map_tokens),

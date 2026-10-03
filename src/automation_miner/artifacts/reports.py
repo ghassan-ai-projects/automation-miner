@@ -58,7 +58,7 @@ def _header(run_id: str, context: ContextPacket, stats: PortfolioStats, status: 
             publication_status: str) -> list[str]:
     filtered = f", {stats.filtered} filtered" if stats.filtered else ""
     return [
-        f"# Automation Mining Report — {context.domain}",
+        f"# Automation Mining Report: {context.domain}",
         "",
         f"> **Run:** `{run_id}`  ",
         f"> **Date:** {run_id.split('_', 1)[0]}  ",

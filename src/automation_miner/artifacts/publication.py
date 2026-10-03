@@ -218,7 +218,7 @@ def _recovery_summary(
 
 
 _RECOVERED_REPORT = (
-    "# Automation Mining Report — {domain}\n\n"
+    "# Automation Mining Report: {domain}\n\n"
     "> **Run:** `{run_id}`  \n"
     "> **Status:** failed  \n"
     "> **Publication:** pending  \n"

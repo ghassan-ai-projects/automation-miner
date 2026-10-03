@@ -30,6 +30,7 @@ from automation_miner.readers import (
 )
 from automation_miner.schemas import ContextPacket, InputQuality, SkippedFile
 
+from automation_miner.ingest.naming import file_title, readable_name
 from automation_miner.ingest.packet import (
     MAX_DOMAIN_CHARS,
     MAX_SLUG_CHARS,
@@ -143,7 +144,8 @@ def ingest_file(
         raise ValueError(f"No text could be extracted from {path}")
     return build_packet(
         PacketSource(
-            domain=path.stem, source_kind="file", documents=[document], constraints=constraints,
+            domain=file_title(document, path.stem), slug_name=path.stem, source_kind="file",
+            documents=[document], constraints=constraints,
             budget=budget or ContextBudget(), model=model, cache_root=cache_root,
             reader_errors=list(registry.errors), preflight_callback=preflight_callback,
         )
@@ -170,7 +172,8 @@ def ingest_kb(
         raise ValueError(f"No readable files in {folder}. Skipped: {reasons}")
     return build_packet(
         PacketSource(
-            domain=folder.name, source_kind="kb", documents=documents, constraints=constraints,
+            domain=readable_name(folder.name), slug_name=folder.name, source_kind="kb",
+            documents=documents, constraints=constraints,
             budget=budget or ContextBudget(), skipped=skipped, model=model, cache_root=cache_root,
             reader_errors=list(registry.errors), preflight_callback=preflight_callback,
         )
