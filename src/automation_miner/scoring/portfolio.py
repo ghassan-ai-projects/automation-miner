@@ -16,6 +16,7 @@ from automation_miner.schemas import (
 from automation_miner.scoring.exclusions import exclusions
 from automation_miner.scoring.policy import (
     URGENT_PORTFOLIO_SIZE,
+    ConstraintPolicy,
     parse_constraint_policy,
 )
 
@@ -93,14 +94,19 @@ def apply_portfolio_policy(
     opportunities: list[Opportunity],
     constraints: str = "",
     constraint_params: Mapping[str, str] | None = None,
+    *,
+    policy: ConstraintPolicy | None = None,
 ) -> list[Opportunity]:
     """Rank and mark eligibility, retaining every opportunity.
+
+    A resolved ``policy`` (the run's, see ``context_policy``) wins over
+    re-parsing ``constraints`` and ``constraint_params``.
 
     Returns published opportunities in rank order, followed by filtered ones in
     rank order. Nothing is discarded: a filtered opportunity was still drafted,
     critiqued, refined and scored, and the operator paid for it.
     """
-    policy = parse_constraint_policy(constraints, constraint_params)
+    policy = policy or parse_constraint_policy(constraints, constraint_params)
     marked = []
     for opp in sorted(opportunities, key=lambda o: sort_key(o, policy.urgent)):
         reasons = exclusions(opp, policy)

@@ -23,6 +23,8 @@ from automation_miner.schemas.context import (
     InputQuality,
     RunBudget,
     ContextPacket,
+    PolicyClause,
+    PolicyReading,
 )
 from automation_miner.schemas.analysis import (
     EvidenceClaim,
@@ -70,6 +72,8 @@ __all__ = [
     "CandidatePortfolio",
     "Chunk",
     "ContextPacket",
+    "PolicyClause",
+    "PolicyReading",
     "ContextStats",
     "Critique",
     "DomainMap",

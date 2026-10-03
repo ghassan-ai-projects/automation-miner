@@ -30,7 +30,7 @@ from automation_miner.scoring import (
     apply_portfolio_policy,
     compute_ice,
     evidence_confidence_cap,
-    parse_constraint_policy,
+    context_policy,
     validate_coherence,
 )
 
@@ -119,10 +119,9 @@ class ReviewStages(StageBase):
         calibration += capped
         if fallback:
             calibration.append("scored individually: missing from the comparative call")
-        policy = parse_constraint_policy(
-            state.get("policy_constraints", state["constraints"]), state.get("constraint_params")
+        score, risk, applied = apply_constraint_overrides(
+            score, draft.risk_level, context_policy(ctx)
         )
-        score, risk, applied = apply_constraint_overrides(score, draft.risk_level, policy)
         return score, risk, calibration, applied
 
     def _scored(
@@ -169,8 +168,7 @@ class ReviewStages(StageBase):
         started = time.time()
         ranked = apply_portfolio_policy(
             [Opportunity.model_validate(o) for o in state["opportunities"]],
-            state.get("policy_constraints", state["constraints"]),
-            state.get("constraint_params"),
+            policy=context_policy(ContextPacket.model_validate(state["context"])),
         )
         return {
             "opportunities": [o.model_dump(mode="json") for o in ranked],

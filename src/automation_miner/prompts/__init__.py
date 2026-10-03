@@ -41,6 +41,10 @@ defect verbatim so a repair role can fix exactly that text, a verifier checks
 the repair, and the scorer grades the whole portfolio side by side on
 value-anchored ladders. A precision rule stops numbers, causes, and system
 capabilities from being stretched beyond what the evidence states.
+
+Version 4.2 reads free-text run constraints with a policy-reader role into
+typed flags, each backed by a verbatim quote that code verifies, instead of
+deciding binding filters with keyword patterns alone.
 """
 
 from __future__ import annotations
@@ -65,6 +69,7 @@ from automation_miner.prompts.systems import (
     INPUT_ASSESSMENT_SYSTEM,
     LAYER_ANALYST_SYSTEM,
     MAPPER_SYSTEM,
+    POLICY_READER_SYSTEM,
     PORTFOLIO_PLANNER_SYSTEM,
     REFINER_SYSTEM,
     REPAIR_SYSTEM,
@@ -81,6 +86,7 @@ from automation_miner.prompts.tasks import (
     domain_map_prompt,
     input_assessment_prompt,
     layer_analysis_prompt,
+    policy_reading_prompt,
     portfolio_plan_prompt,
     portfolio_score_prompt,
     refine_prompt,
@@ -89,7 +95,7 @@ from automation_miner.prompts.tasks import (
     verify_prompt,
 )
 
-PROMPT_VERSION = "4.1"
+PROMPT_VERSION = "4.2"
 
 __all__ = [
     "PROMPT_VERSION",
@@ -108,6 +114,7 @@ __all__ = [
     "LAYER_ANALYST_SYSTEM",
     "MAPPER_SYSTEM",
     "PAIN_QUANTIFICATION",
+    "POLICY_READER_SYSTEM",
     "PORTFOLIO_PLANNER_SYSTEM",
     "PRECISION_RULE",
     "REFINER_SYSTEM",
@@ -123,6 +130,7 @@ __all__ = [
     "domain_map_prompt",
     "input_assessment_prompt",
     "layer_analysis_prompt",
+    "policy_reading_prompt",
     "portfolio_plan_prompt",
     "portfolio_score_prompt",
     "refine_prompt",

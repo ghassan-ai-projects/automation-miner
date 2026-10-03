@@ -1,13 +1,24 @@
-"""Constraint policy: one deterministic parser for prose and typed parameters.
+"""Constraint policy: one deterministic resolver for every source of constraints.
 
 The single source of truth for both score overrides and portfolio filtering.
+Precedence, highest first:
+
+1. structured parameters (``--constraint key=value``, MCP ``constraint_params``);
+2. the run's verified policy reading of the constraint text (``policy_reading``);
+3. the keyword patterns in :mod:`prose`, only when no reading exists.
+
+Every active flag records where it came from, so a report can show *why* a
+filter fired instead of leaving the operator to reverse-engineer a regex.
 """
 
 from __future__ import annotations
 
-import re
+import dataclasses
 from collections.abc import Mapping
 from dataclasses import dataclass
+
+from automation_miner.schemas import ContextPacket, PolicyClause, PolicyReading
+from automation_miner.scoring.prose import prose_agent_limit, prose_matches
 
 URGENT_PORTFOLIO_SIZE = 3
 
@@ -23,24 +34,6 @@ FLAGS = (
     "human_payment_approval",
 )
 
-# Legacy free-form syntax. Structured parameters (--constraint key=value)
-# override every one of these.
-PROSE_PATTERNS: dict[str, str] = {
-    "low_budget": r"(?:\bbudget\s*[:=]?\s*(?:low|zero|none)\b|\bno\s+budget\b)",
-    "no_coding": r"\bno[- ]?(?:custom\s+dev|coding)\b",
-    "compliance": r"\b(?:compliance|regulated)\b",
-    "urgent": r"\b(?:urgent|1\s+week|one\s+week|tight\s+timeline)\b|\btimeline\s*[:=]?\s*tight\b",
-    "no_infrastructure": r"\bno\s+(?:existing\s+)?infrastructure\b",
-    "mature_stack": r"\b(?:existing\s+)?mature\s+stack\b",
-    "eu_data_residency": (
-        r"\beu[- ](?:hosted|only)\b|\beu\s+data\s+residen|"
-        r"\bdata.{0,30}(?:remain|stay).{0,15}\beu\b"
-    ),
-    "human_payment_approval": (
-        r"\bpayment(?:s)?\b.{0,30}\b(?:human\s+approval|must|require).{0,20}\bapprov"
-    ),
-}
-
 FLAG_NOTES: dict[str, str] = {
     "low_budget": "budget low/zero: only Ease >= 4 opportunities are eligible",
     "no_coding": "no-coding: Ease capped at 4 (configuration-level only)",
@@ -52,27 +45,19 @@ FLAG_NOTES: dict[str, str] = {
     "human_payment_approval": "payments: explicit human approval is mandatory",
 }
 
-_BOUNDARIES = re.compile(r"[.;,\n]|\b(?:but|however|except|although|unless)\b")
-_NEGATED_BEFORE = re.compile(r"(?:not|no|without|never|isn't|aren't)\s+(?:\w+\s+){0,2}$")
-_NEGATED_INSIDE = re.compile(
-    r"\b(?:do|does|did|is|are|was|were|will|can)\s+not\b|"
-    r"\b(?:don't|doesn't|didn't|isn't|aren't|wasn't|weren't|won't|can't)\b"
-)
-_NEGATED_AFTER = re.compile(
-    r"\s+(?:(?:is|are|was|were|do|does|did|will|can)\s+)?(?:not|isn't|aren't|never)\b"
-)
-_DISMISSED_AFTER = re.compile(
-    r"\s+(?:concern|concerns|issue|issues|problem|problems|restriction|"
-    r"restrictions|limitation|limitations)\b"
-)
 _TRUE = {"1", "true", "yes", "on", "required", "heavy", "strict", "tight"}
 _FALSE = {"0", "false", "no", "off", "none", "unset", "disabled"}
 RECOGNIZED = set(FLAGS) - {"low_budget"} | {"budget", "timeline", "agent_limit", "max_agents"}
 
 
+# The structured parameter that sets a flag, when it is not the flag's own name.
+_PARAM_FOR = {"low_budget": "budget", "urgent": "timeline"}
+_ENFORCE_HINT = {"low_budget": "budget=low", "urgent": "timeline=tight"}
+
+
 @dataclass(frozen=True)
 class ConstraintPolicy:
-    """Deterministic policy flags parsed from the documented free-form syntax.
+    """Deterministic policy flags resolved from parameters and constraint text.
 
     The single source of truth for both score overrides and portfolio filtering.
     """
@@ -89,41 +74,29 @@ class ConstraintPolicy:
     raw: str = ""
     warnings: tuple[str, ...] = ()
     advisory_params: tuple[str, ...] = ()
+    sources: tuple[tuple[str, str], ...] = ()
 
     @property
     def active(self) -> bool:
         return any(getattr(self, flag) for flag in FLAGS) or self.agent_limit is not None
 
+    def source(self, flag: str) -> str:
+        return dict(self.sources).get(flag, "")
+
     def describe(self) -> list[str]:
-        """Human-readable list of every policy in force, for run notes."""
-        notes = [note for flag, note in FLAG_NOTES.items() if getattr(self, flag)]
+        """Human-readable list of every policy in force and its origin, for run notes."""
+        notes = [
+            note + (f" ({self.source(flag)})" if self.source(flag) else "")
+            for flag, note in FLAG_NOTES.items() if getattr(self, flag)
+        ]
         if self.agent_limit is not None:
-            notes.append(f"agent limit {self.agent_limit}: larger topologies excluded")
+            origin = f" ({self.source('agent_limit')})" if self.source("agent_limit") else ""
+            notes.append(f"agent limit {self.agent_limit}: larger topologies excluded{origin}")
         notes.extend(self.warnings)
         if self.advisory_params:
             names = ", ".join(self.advisory_params)
             notes.append(f"advisory constraint parameters (not hard policy): {names}")
         return notes
-
-
-def _negated(text: str, match: re.Match[str]) -> bool:
-    """Whether a matched phrase is negated or dismissed within its own clause."""
-    prior = list(_BOUNDARIES.finditer(text, 0, match.start()))
-    clause_start = prior[-1].end() if prior else 0
-    following = _BOUNDARIES.search(text, match.end())
-    clause_end = following.start() if following else len(text)
-    after = text[match.end() : clause_end]
-    return bool(
-        _NEGATED_BEFORE.search(text[clause_start : match.start()])
-        or _NEGATED_INSIDE.search(match.group(0))
-        or _NEGATED_AFTER.match(after)
-        or _DISMISSED_AFTER.match(after)
-    )
-
-
-def _active_phrase(text: str, pattern: str) -> bool:
-    """Match a policy phrase while respecting clause-bounded negation."""
-    return any(not _negated(text, match) for match in re.finditer(pattern, text))
 
 
 def _param_bool(params: Mapping[str, str], key: str) -> bool | None:
@@ -178,15 +151,9 @@ def _apply_structured(
             warnings.append(f"unrecognized structured timeline {timeline!r}; ignored")
 
 
-def _agent_limit(text: str, structured: dict[str, str], warnings: list[str]) -> int | None:
-    match = re.search(r"agent[\s_-]*limit\s*[:=]?\s*(\d+)", text)
-    limit = int(match.group(1)) if match else None
-    if limit is None and re.search(r"agent[\s_-]*limit", text):
-        limit = 1
-    if limit is None and (
-        "small team" in text or re.search(r"team\s*[:=]?\s*([1-3])(?:\D|$)", text)
-    ):
-        limit = 2
+def _structured_limit(
+    structured: dict[str, str], warnings: list[str], fallback: int | None
+) -> int | None:
     for key in ("agent_limit", "max_agents"):
         if key not in structured:
             continue
@@ -198,29 +165,79 @@ def _agent_limit(text: str, structured: dict[str, str], warnings: list[str]) -> 
         if candidate >= 1:
             return candidate
         warnings.append(f"structured {key} must be at least 1; ignored for hard policy")
-    return limit
+    return fallback
+
+
+def _keyword_values(text: str) -> tuple[dict[str, bool], int | None, dict[str, str]]:
+    matches = prose_matches(text)
+    sources = {flag: f"keyword “{phrase}”" for flag, phrase in matches.items()}
+    limit = prose_agent_limit(text)
+    if limit is not None:
+        sources["agent_limit"] = "keyword"
+    return {flag: flag in matches for flag in FLAGS}, limit, sources
+
+
+def _read_values(
+    text: str, reading: PolicyReading, warnings: list[str]
+) -> tuple[dict[str, bool], int | None, dict[str, str]]:
+    """Flags from the verified reading; a keyword it did not apply becomes a warning."""
+    quotes: dict[str, PolicyClause] = {clause.flag: clause for clause in reading.clauses}
+    sources: dict[str, str] = {flag: f"from “{clause.quote}”" for flag, clause in quotes.items()}
+    limit_clause = quotes.get("agent_limit")
+    limit = (limit_clause.limit or 1) if limit_clause else None
+    for flag, phrase in prose_matches(text).items():
+        if flag not in quotes:
+            hint = _ENFORCE_HINT.get(flag, f"{flag}=true")
+            warnings.append(
+                f"constraints mention “{phrase}” but it was not read as binding {flag}; "
+                f"pass --constraint {hint} to enforce it"
+            )
+    return {flag: flag in quotes for flag in FLAGS}, limit, sources
+
+
+def _param_sources(structured: dict[str, str]) -> dict[str, str]:
+    sources = {}
+    for flag in (*FLAGS, "agent_limit", "max_agents"):
+        key = _PARAM_FOR.get(flag, flag)
+        if key in structured:
+            sources["agent_limit" if flag == "max_agents" else flag] = (
+                f"parameter {key}={structured[key]}"
+            )
+    return sources
 
 
 def parse_constraint_policy(
-    constraints: str, params: Mapping[str, str] | None = None
+    constraints: str, params: Mapping[str, str] | None = None,
+    reading: PolicyReading | None = None,
 ) -> ConstraintPolicy:
-    """Build one deterministic policy from prose plus typed parameters.
+    """Build one deterministic policy from typed parameters and the constraint text.
 
-    Recognized structured parameters override legacy prose. Unknown parameters
+    Recognized structured parameters override the text. Unknown parameters
     remain prompt context and are explicitly reported as advisory; they never
     become execution filters by accident.
     """
-    text = constraints.casefold()
     warnings: list[str] = []
     structured = _structured(params, warnings)
-    values = {flag: _active_phrase(text, PROSE_PATTERNS[flag]) for flag in FLAGS}
+    if reading is None:
+        values, limit, sources = _keyword_values(constraints)
+    else:
+        values, limit, sources = _read_values(constraints, reading, warnings)
     _apply_structured(values, structured, warnings)
-    agent_limit = _agent_limit(text, structured, warnings)
-    advisory = tuple(sorted(key for key in structured if key not in RECOGNIZED))
+    sources.update(_param_sources(structured))
     return ConstraintPolicy(
         **values,
-        agent_limit=agent_limit,
+        agent_limit=_structured_limit(structured, warnings, limit),
         raw=constraints,
         warnings=tuple(warnings),
-        advisory_params=advisory,
+        advisory_params=tuple(sorted(key for key in structured if key not in RECOGNIZED)),
+        sources=tuple(sorted(sources.items())),
     )
+
+
+def context_policy(context: ContextPacket) -> ConstraintPolicy:
+    """The policy a run resolved, including warnings from reading its constraints."""
+    policy = parse_constraint_policy(
+        context.raw_constraints, context.constraint_params, context.policy_reading
+    )
+    warnings = (*context.policy_warnings, *policy.warnings)
+    return dataclasses.replace(policy, warnings=warnings)

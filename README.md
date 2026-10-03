@@ -249,6 +249,16 @@ require Ease ≥ 4; compliance-heavy runs exclude unresolved high-risk items;
 infrastructure maturity limits eligible layers; agent limits cap topology;
 urgent/tight-timeline runs publish the top three by Ease then ICE.
 
+Which of those policies apply is decided once per run and recorded in
+`trace/context.json`. Typed parameters (`--constraint budget=low`,
+`compliance=true`, `timeline=tight`, `agent_limit=2`) always win. Free-text
+`--constraints` are read by a model into the same typed flags, and each flag
+must quote the words that impose it: code discards a clause whose quote is not
+in the text, so "no budget concerns" never switches on the low-budget filter.
+The report's Notes name the source of every active policy, and warn when a
+keyword appears that was not read as binding. If the reading call fails, the
+run falls back to keyword matching and says so.
+
 Opportunities excluded by that policy are **kept**, not deleted — they were drafted,
 critiqued, refined and scored, so each one carries its exclusion reason and appears in
 `summary.json` and in the report's "Excluded by Constraint Policy" section.

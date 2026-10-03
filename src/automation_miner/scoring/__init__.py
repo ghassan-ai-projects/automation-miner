@@ -41,8 +41,10 @@ from automation_miner.scoring.ice import (
 from automation_miner.scoring.policy import (
     URGENT_PORTFOLIO_SIZE,
     ConstraintPolicy,
+    context_policy,
     parse_constraint_policy,
 )
+from automation_miner.scoring.reading import read_policy, verify_reading
 from automation_miner.scoring.portfolio import (
     FILTER_KEYS,
     active_filters,
@@ -62,6 +64,7 @@ __all__ = [
     "SCORE_MIN",
     "URGENT_PORTFOLIO_SIZE",
     "ConstraintPolicy",
+    "context_policy",
     "active_filters",
     "apply_constraint_overrides",
     "apply_portfolio_policy",
@@ -72,6 +75,8 @@ __all__ = [
     "evidence_confidence_cap",
     "filtered",
     "parse_constraint_policy",
+    "read_policy",
+    "verify_reading",
     "portfolio_stats",
     "published",
     "sort_key",

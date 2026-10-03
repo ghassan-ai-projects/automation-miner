@@ -23,6 +23,7 @@ from automation_miner.prompts import (
     layer_analysis_prompt,
 )
 from automation_miner.readers import build_registry
+from automation_miner.scoring import read_policy
 from automation_miner.schemas import (
     LAYER_ORDER,
     AnalysisMode,
@@ -54,10 +55,12 @@ class AnalysisStages(StageBase):
         run_dir = Path(state["run_dir"])
         packet = self._reuse(state, RunLayout(run_dir).context, ContextPacket)
         if packet is None:
+            raw = state.get("policy_constraints", "")
+            reading, warnings = read_policy(self.model, raw)
             packet = self._read_input(state).model_copy(
                 update={
                     "constraint_params": state.get("constraint_params", {}),
-                    "raw_constraints": state.get("policy_constraints", ""),
+                    "raw_constraints": raw, "policy_reading": reading, "policy_warnings": warnings,
                 }
             )
             write_json(RunLayout(run_dir).context, packet)

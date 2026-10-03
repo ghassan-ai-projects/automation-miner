@@ -46,7 +46,7 @@ from automation_miner.schemas import (
 from automation_miner.scoring import (
     FILTER_KEYS,
     active_filters,
-    parse_constraint_policy,
+    context_policy,
     published,
 )
 
@@ -124,7 +124,7 @@ def render_report(
         routes = ", ".join(f"{role}={name}" for role, name in sorted(models.items()))
         lines.append(f"- **Models:** {routes}")
     lines += _ranking(ranked) + excluded_section(ranked) + skipped_section(context)
-    policy = parse_constraint_policy(context.raw_constraints, context.constraint_params)
+    policy = context_policy(context)
     notes = run_notes(context, ranked, policy)
     if notes:
         lines += ["", "## Notes", "", *[f"- {note}" for note in notes]]
@@ -153,7 +153,7 @@ def render_summary(
 ) -> RunSummary:
     """Compact, agent-facing view of a run — the payload MCP returns inline."""
     paths = brief_paths or {}
-    policy = parse_constraint_policy(context.raw_constraints, context.constraint_params)
+    policy = context_policy(context)
     return RunSummary(
         run_id=run_id, domain=context.domain, domain_slug=context.domain_slug,
         constraints=context.constraints, raw_constraints=context.raw_constraints,

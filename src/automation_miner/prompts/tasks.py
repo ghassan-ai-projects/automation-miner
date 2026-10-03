@@ -273,3 +273,11 @@ def digest_prompt(label: str, content: str, target_chars: int) -> str:
         "named pain points, and compliance requirements. Drop only prose padding "
         "and repetition. No preamble, no commentary."
     )
+
+
+def policy_reading_prompt(constraints: str) -> str:
+    return (
+        untrusted("Run constraints", constraints, tag="untrusted-constraints")
+        + "\n\nProduce the PolicyReading JSON. An empty clauses list is correct when "
+        "the constraints impose none of the flags."
+    )

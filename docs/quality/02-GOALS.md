@@ -32,7 +32,7 @@ green `make ci-check` on the same commit.
 | 1 | Live stage progress in the CLI | ✅ |
 | 2 | Provider-reported $ cost per role/run, `max_cost_usd` budget | ✅ |
 | 3 | `resume` a failed run, reusing completed stages | ✅ |
-| 4 | Typed constraint policy instead of prose regexes | ⬜ next |
+| 4 | Typed constraint policy instead of prose regexes | ✅ |
 | 5 | Suite covers large inputs and the original DHL input | ✅ |
 | 6 | Unicode tokenizer and German retrieval vocabulary | ✅ |
 | 7 | Prior-idea memory across differently named runs of one domain | ✅ |

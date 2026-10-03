@@ -77,6 +77,32 @@ class RunBudget(ArtifactModel):
     )
 
 
+PolicyFlagName = Literal[
+    "low_budget", "no_coding", "compliance", "urgent", "no_infrastructure", "mature_stack",
+    "eu_data_residency", "human_payment_approval", "agent_limit",
+]
+
+
+class PolicyClause(ArtifactModel):
+    """One binding policy the operator's constraint text imposes, with its proof."""
+
+    flag: PolicyFlagName
+    quote: str = Field(description="The exact words in the constraints that impose this flag.")
+    limit: int | None = Field(
+        default=None, ge=1, description="Maximum number of agents; only for agent_limit."
+    )
+
+
+class PolicyReading(ArtifactModel):
+    """The model's reading of free-text constraints as typed policy flags.
+
+    List a clause only for a flag the text imposes. Code keeps a clause only
+    when its quote appears verbatim in the constraints.
+    """
+
+    clauses: list[PolicyClause] = Field(default_factory=list)
+
+
 class ContextPacket(ArtifactModel):
     """Normalized, budget-bounded input for the pipeline.
 
@@ -98,6 +124,9 @@ class ContextPacket(ArtifactModel):
     stats: ContextStats = Field(default_factory=ContextStats)
     input_quality: InputQuality = Field(default_factory=InputQuality)
     retained_quality: InputQuality = Field(default_factory=InputQuality)
+    # Verified reading of ``raw_constraints``; None means keyword fallback.
+    policy_reading: PolicyReading | None = None
+    policy_warnings: list[str] = Field(default_factory=list)
 
     def chunk_ids(self) -> set[str]:
         return {chunk.id for chunk in self.chunks}

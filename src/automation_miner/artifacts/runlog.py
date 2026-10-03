@@ -29,7 +29,7 @@ from automation_miner.schemas import (
 )
 from automation_miner.scoring import (
     FILTER_KEYS,
-    parse_constraint_policy,
+    context_policy,
     published,
 )
 
@@ -140,7 +140,7 @@ def _created(ranked: list[Opportunity]) -> list[str]:
 def _closing(
     context: ContextPacket, ranked: list[Opportunity], stats: PortfolioStats, usage: RunUsage
 ) -> list[str]:
-    policy = parse_constraint_policy(context.raw_constraints, context.constraint_params)
+    policy = context_policy(context)
     notes = run_notes(context, ranked, policy)
     lines = ["", "---", "", "## Notes & Observations", ""]
     lines += [f"- {note}" for note in notes] or ["- Nothing unusual."]

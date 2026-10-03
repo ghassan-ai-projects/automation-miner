@@ -12,6 +12,7 @@ the regression these tests exist to catch.
 
 from __future__ import annotations
 
+import html
 import re
 from typing import Any, Callable
 
@@ -22,6 +23,7 @@ _JSON_LAYER_RE = re.compile(r'"layer"\s*:\s*"(\w+)"')
 _TARGET_RE = re.compile(r"approximately ([\d,]+) characters")
 _CONTENT_RE = re.compile(r"\nContent:\n(.*)\n\nWrite a dense digest", re.DOTALL)
 _REF_RE = re.compile(r"\[(S\d+)\]")
+_CONSTRAINTS_RE = re.compile(r"<untrusted-constraints>\n(.*)\n</untrusted-constraints>", re.DOTALL)
 
 _LAYERS = payloads.LAYERS
 
@@ -79,7 +81,23 @@ _BUILDERS: dict[str, Builder] = {
     "ClaimAudit": lambda layer, refs, prompt: payloads.claim_audit(),
     "BriefJudgement": lambda layer, refs, prompt: payloads.brief_judgement(),
     "PortfolioJudgement": lambda layer, refs, prompt: payloads.portfolio_judgement(),
+    "PolicyReading": lambda layer, refs, prompt: _policy_reading(prompt),
 }
+
+
+def _policy_reading(prompt: str) -> dict[str, Any]:
+    """Read constraints with the keyword patterns, quoting the phrase each one matched."""
+    from automation_miner.scoring.prose import prose_agent_limit, prose_matches
+
+    match = _CONSTRAINTS_RE.search(prompt)
+    text = html.unescape(match.group(1)) if match else ""
+    clauses: list[dict[str, Any]] = [
+        {"flag": flag, "quote": phrase} for flag, phrase in prose_matches(text).items()
+    ]
+    limit = prose_agent_limit(text)
+    if limit is not None:
+        clauses.append({"flag": "agent_limit", "quote": text.strip(), "limit": limit})
+    return {"clauses": clauses}
 
 
 def call_json(role: str, schema_name: str, prompt: str) -> dict[str, Any]:
