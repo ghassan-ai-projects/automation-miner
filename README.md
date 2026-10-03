@@ -371,7 +371,7 @@ drafter       = { provider = "openrouter", model = "deepseek/deepseek-v4-flash",
 critic        = { provider = "openrouter", model = "deepseek/deepseek-v4-flash" }
 refiner       = { provider = "openrouter", model = "deepseek/deepseek-v4-flash" }
 scorer        = { provider = "openrouter", model = "deepseek/deepseek-v4-flash", temperature = 0.1 }
-judge         = { provider = "openrouter", model = "deepseek/deepseek-v4-flash" }  # evaluate only
+judge         = { provider = "zai",        model = "glm-5.3-flash" }  # evaluate only
 
 [retry]
 attempts = 4
@@ -386,8 +386,16 @@ max_tokens = 1500000
 max_seconds = 2400
 ```
 
+Built-in providers: `openrouter` (`OPENROUTER_API_KEY`), `gemini`
+(`GOOGLE_API_KEY`), and `zai` for Z.ai GLM models (`ZAI_API_KEY`). The `zai`
+default is the GLM Coding Plan endpoint; a pay-as-you-go key needs
+`base_url = "https://api.z.ai/api/paas/v4"` under `[providers.zai]`. The judge
+runs on a different model family from the generator so it does not grade its
+own family's writing.
+
 Per role, `reasoning_effort = "off" | "minimal" | "low" | "medium" | "high"` sets
-OpenRouter's unified reasoning control for reasoning models.
+OpenRouter's unified reasoning control for reasoning models. OpenRouter-only
+request fields (`reasoning`, provider routing) are sent to OpenRouter only.
 
 Providers stream by default where supported (`stream = true` under
 `[providers.<name>]`). Streaming makes progress visible: an attempt that sends

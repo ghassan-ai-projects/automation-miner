@@ -37,76 +37,9 @@ from automation_miner.models.config import load_config
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from make_large_kb import make_large_kb  # noqa: E402
+from quality_cases import BAR, CASES, Case  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
-
-
-@dataclass(frozen=True)
-class Case:
-    name: str
-    kind: str
-    value: str
-    constraints: str = ""
-    min_published: int = 3
-    min_publication_rate: float = 0.0
-    expected_mode: str = ""
-    all_hypotheses: bool = False
-
-
-CASES: dict[str, Case] = {
-    "claims": Case(
-        name="claims",
-        kind="kb",
-        value=str(ROOT / "examples" / "claims-intake"),
-        constraints="compliance:heavy, team:5",
-        min_published=4,
-        min_publication_rate=0.6,
-        expected_mode="operational",
-    ),
-    "strategy": Case(
-        name="strategy",
-        kind="file",
-        value=str(ROOT / "examples" / "hospital-strategy-memo.md"),
-        min_published=3,
-        expected_mode="strategy",
-    ),
-    "oneliner": Case(
-        name="oneliner",
-        kind="idea",
-        value="Independent veterinary clinics in the Netherlands",
-        min_published=3,
-        all_hypotheses=True,
-    ),
-    # The input of the first real run (DHL), kept as a regression case.
-    "dhl": Case(
-        name="dhl",
-        kind="idea",
-        value=(ROOT / "examples" / "dhl-germany-domain.md").read_text(encoding="utf-8"),
-        min_published=4,
-        min_publication_rate=0.6,
-    ),
-    # ~89k tokens of synthetic field-service records: exercises digestion and
-    # per-stage evidence selection. Generated into the output directory.
-    "large": Case(
-        name="large",
-        kind="kb",
-        value="@large-kb",
-        min_published=4,
-        expected_mode="operational",
-    ),
-}
-
-# The bar. Keep in sync with docs/quality/00-QUALITY-BAR.md.
-BAR: dict[str, float] = {
-    "max_minutes": 15.0,
-    "max_lint_errors": 0,
-    "min_judge_overall_mean": 4.0,
-    "min_judge_dimension_mean": 3.5,
-    "min_brief_overall": 3,
-    "max_fabricated_facts_per_brief": 0.5,
-    "min_portfolio_diversity": 4,
-    "min_portfolio_coverage": 3,
-}
 
 
 @dataclass
@@ -115,6 +48,7 @@ class CaseResult:
     evaluation: RunEvaluation | None = None
     error: str = ""
     checks: dict[str, bool] = field(default_factory=dict)
+    run_dir: Path | None = None
 
 
 def _key_usage(config_path: Path) -> float | None:
@@ -133,7 +67,7 @@ def _key_usage(config_path: Path) -> float | None:
         return None
 
 
-def _run_case(case: Case, out: Path, config_path: Path, judge: bool, iterations: int) -> CaseResult:
+def _mine_case(case: Case, out: Path, config_path: Path, iterations: int) -> CaseResult:
     workspace = out / case.name
     if workspace.exists():
         shutil.rmtree(workspace)
@@ -146,21 +80,40 @@ def _run_case(case: Case, out: Path, config_path: Path, judge: bool, iterations:
     result = CaseResult(case)
     try:
         state = run_mine(
-            workspace_path=workspace,
-            constraints=case.constraints,
-            max_iterations=iterations,
-            **kwargs,
+            workspace_path=workspace, constraints=case.constraints,
+            max_iterations=iterations, **kwargs,
         )
-        run_dir = Path(state["run_dir"])
+        result.run_dir = Path(state["run_dir"])
     except Exception as exc:  # noqa: BLE001 - a failed case is a measured result
         result.error = f"{type(exc).__name__}: {exc}"[:2_000]
-        run_dir = Path(getattr(exc, "run_dir", "")) if getattr(exc, "run_dir", "") else None
-        if run_dir is None:
-            return result
+        result.run_dir = Path(exc.run_dir) if getattr(exc, "run_dir", "") else None  # type: ignore[attr-defined]
+    return result
+
+
+def _existing_case(case: Case, out: Path, config_path: Path) -> CaseResult:
+    """A case mined earlier, re-graded with the current config's judge (no mining)."""
+    workspace = out / case.name
+    runs = sorted(p for p in (workspace / "runs").glob("*") if p.is_dir())
+    if not runs:
+        return CaseResult(case, error=f"no earlier run under {workspace}")
+    shutil.copy(config_path, workspace / "miner.toml")
+    return CaseResult(case, run_dir=runs[-1])
+
+
+def _run_case(
+    case: Case, out: Path, config_path: Path, judge: bool, iterations: int, rejudge: bool
+) -> CaseResult:
+    if rejudge:
+        result = _existing_case(case, out, config_path)
+    else:
+        result = _mine_case(case, out, config_path, iterations)
+    if result.run_dir is None:
+        return result
+    workspace = out / case.name
     judge_model = MinerModel(load_config(workspace)) if judge else None
     try:
-        if (run_dir / "summary.json").is_file():
-            result.evaluation = evaluate_run(run_dir, workspace, judge_model, samples=2)
+        if (result.run_dir / "summary.json").is_file():
+            result.evaluation = evaluate_run(result.run_dir, workspace, judge_model, samples=2)
     finally:
         if judge_model is not None:
             judge_model.close()
@@ -261,6 +214,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--label", default="")
     parser.add_argument("--iterations", type=int, default=2)
     parser.add_argument("--no-judge", action="store_true")
+    parser.add_argument(
+        "--rejudge", action="store_true",
+        help="Re-grade the runs already in --out with the config's judge; no mining.",
+    )
     args = parser.parse_args(argv)
 
     cases = [CASES[name.strip()] for name in args.cases.split(",") if name.strip()]
@@ -271,7 +228,8 @@ def main(argv: list[str] | None = None) -> int:
         results = list(
             pool.map(
                 lambda case: _run_case(
-                    case, args.out, args.config, not args.no_judge, args.iterations
+                    case, args.out, args.config, not args.no_judge, args.iterations,
+                    args.rejudge,
                 ),
                 cases,
             )

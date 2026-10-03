@@ -62,6 +62,14 @@ def request_body(route: RoleRoute, system: str, prompt: str) -> dict[str, Any]:
     }
     if route.json_mode:
         body["response_format"] = {"type": "json_object"}
+    if "openrouter.ai" in route.base_url:
+        body.update(_openrouter_extensions(route))
+    return body
+
+
+def _openrouter_extensions(route: RoleRoute) -> dict[str, Any]:
+    """OpenRouter's ``reasoning`` and ``provider`` fields; other APIs may reject them."""
+    body: dict[str, Any] = {}
     if route.reasoning_effort == "off":
         body["reasoning"] = {"enabled": False}
     elif route.reasoning_effort:

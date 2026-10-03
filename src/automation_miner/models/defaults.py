@@ -75,6 +75,14 @@ DEFAULT_CONFIG: dict[str, Any] = {
             "api_key_env": "GOOGLE_API_KEY",
             "supports_json_mode": True,
         },
+        # Z.ai GLM models. Keys on a GLM Coding Plan only work on the coding
+        # endpoint; pay-as-you-go keys use https://api.z.ai/api/paas/v4.
+        "zai": {
+            "base_url": "https://api.z.ai/api/coding/paas/v4",
+            "api_key_env": "ZAI_API_KEY",
+            "supports_json_mode": True,
+            "stream": True,
+        },
     },
     "roles": {
         role: {"provider": "openrouter", "model": "deepseek/deepseek-v4-flash"}
