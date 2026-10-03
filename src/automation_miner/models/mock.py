@@ -82,6 +82,8 @@ _BUILDERS: dict[str, Builder] = {
     "BriefJudgement": lambda layer, refs, prompt: payloads.brief_judgement(),
     "PortfolioJudgement": lambda layer, refs, prompt: payloads.portfolio_judgement(),
     "PolicyReading": lambda layer, refs, prompt: _policy_reading(prompt),
+    # No merges: the ledger keeps the analysts' pains exactly as listed.
+    "PainConsolidation": lambda layer, refs, prompt: {"pains": []},
 }
 
 

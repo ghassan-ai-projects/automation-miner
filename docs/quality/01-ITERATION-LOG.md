@@ -76,3 +76,22 @@ Findings and changes since:
 | A failed run had to restart from scratch | `resume` reuses every completed stage from `trace/` |
 
 Iteration 3 needs the key cap raised.
+
+### Review of iteration 2 by reading the briefs (2026-10-03)
+
+Checked by hand against the source files; the GLM judge grading was still
+running. Strong points: cited figures are correct (75 misrouted/week, 121
+duplicates/week, 17 fraud red flags) and AM-004 is forwardable after light
+edits. Defects and what changed:
+
+| Finding | Change |
+|---|---|
+| Largest lever missing: email claims re-keyed at 9 min (640/week, ~96 h/week); only paper was sized | Pain consolidation pass: merge duplicates, apply every stated per-item time to every volume it covers, volumes as formulas checked in code |
+| Pain list repeats paraphrases (policy lookup 3x, coding loss 2x) | Same consolidation pass; listed pains it does not account for are kept |
+| Best email-triage brief blocked by the critic's arithmetic (392 was right; critic said 243) and the repair adopted the wrong number | Derivations with formulas, checked in code; critic and verifier told which sums are verified (prompt 4.3) |
+| Judge rate-limited at 12 parallel calls (z.ai 429) | Per-provider `max_concurrent`; z.ai = 2 |
+
+Open for the next round: tiers (14 of 15 briefs "low", including one saving
+~39 h/week), MVP durations fixed by the template, "team:5" read as the intake
+team's size, GLM judge calibration and iteration-3 measurement.
+

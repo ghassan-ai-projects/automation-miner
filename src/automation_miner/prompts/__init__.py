@@ -68,6 +68,7 @@ from automation_miner.prompts.fragments import (
     WRITING_STANDARD,
     untrusted,
 )
+from automation_miner.prompts.discovery import PAIN_CONSOLIDATION_SYSTEM, pain_consolidation_prompt
 from automation_miner.prompts.systems import (
     CRITIC_SYSTEM,
     DOMAIN_MAP_SYSTEM,
@@ -119,6 +120,7 @@ __all__ = [
     "INPUT_ASSESSMENT_SYSTEM",
     "LAYER_ANALYST_SYSTEM",
     "MAPPER_SYSTEM",
+    "PAIN_CONSOLIDATION_SYSTEM",
     "PAIN_QUANTIFICATION",
     "POLICY_READER_SYSTEM",
     "PORTFOLIO_PLANNER_SYSTEM",
@@ -136,6 +138,7 @@ __all__ = [
     "domain_map_prompt",
     "input_assessment_prompt",
     "layer_analysis_prompt",
+    "pain_consolidation_prompt",
     "policy_reading_prompt",
     "portfolio_plan_prompt",
     "portfolio_score_prompt",

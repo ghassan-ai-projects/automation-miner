@@ -121,6 +121,25 @@ class RankedPain(PainPoint):
     layer: Layer
 
 
+class ConsolidatedPain(PainPoint):
+    """One distinct pain after merging every layer's descriptions of it."""
+
+    layer: Layer
+    sources: list[int] = Field(
+        default_factory=list, description="Numbers of the listed pains this one merges."
+    )
+    volume_formula: str = Field(
+        default="",
+        description="Arithmetic over evidence figures giving volume_per_week, e.g. '1850 * 0.31'.",
+    )
+
+
+class PainConsolidation(ArtifactModel):
+    """The run's distinct, sized pains: merged, completed, and quantified."""
+
+    pains: list[ConsolidatedPain] = Field(default_factory=list)
+
+
 class LayerAnalysis(ArtifactModel):
     """Phase 2 output for one layer."""
 

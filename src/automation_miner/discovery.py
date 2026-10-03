@@ -70,23 +70,19 @@ def _near_duplicate(words: frozenset[str], kept: list[frozenset[str]]) -> bool:
     )
 
 
-def build_pain_ledger(
-    analyses: list[LayerAnalysis], limit: int = LEDGER_SIZE
-) -> list[RankedPain]:
-    """Merge, de-duplicate, and rank every layer's pains; P1 is the largest.
+def rank_pains(pool: list[tuple[Layer, PainPoint]], limit: int = LEDGER_SIZE) -> list[RankedPain]:
+    """De-duplicate and rank pains; P1 is the largest.
 
     Ranking happens before de-duplication, so of two descriptions of one pain
     the better-sized one survives.
     """
-    pool = [
-        (LAYER_ORDER.index(analysis.layer), pain, analysis.layer)
-        for analysis in analyses
-        for pain in analysis.pain_points
-        if _key(pain)
-    ]
+    ranked = sorted(
+        ((LAYER_ORDER.index(layer), pain, layer) for layer, pain in pool if _key(pain)),
+        key=lambda item: _rank_key((item[0], item[1])),
+    )
     kept: list[tuple[PainPoint, Layer]] = []
     seen: list[frozenset[str]] = []
-    for _, pain, layer in sorted(pool, key=lambda item: _rank_key((item[0], item[1]))):
+    for _, pain, layer in ranked:
         words = _content_words(pain)
         if not _near_duplicate(words, seen):
             seen.append(words)
@@ -95,6 +91,14 @@ def build_pain_ledger(
         RankedPain(id=f"P{index}", layer=layer, **pain.model_dump())
         for index, (pain, layer) in enumerate(kept[:limit], 1)
     ]
+
+
+def build_pain_ledger(
+    analyses: list[LayerAnalysis], limit: int = LEDGER_SIZE
+) -> list[RankedPain]:
+    """Merge every layer's pains as listed and rank them (no consolidation call)."""
+    pool = [(a.layer, pain) for a in analyses for pain in a.pain_points]
+    return rank_pains(pool, limit)
 
 
 def same_domain(slug: str, other: str) -> bool:

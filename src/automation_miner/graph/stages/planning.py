@@ -11,7 +11,7 @@ from automation_miner.artifacts.briefs import title_slug
 from automation_miner.artifacts.workspace import read_json, write_json
 from automation_miner.context import draft_query, render_chunks
 from automation_miner.discovery import (
-    build_pain_ledger,
+    rank_pains,
     coverage_report,
     ledger_records,
     render_ledger,
@@ -27,7 +27,9 @@ from automation_miner.prompts import (
     coverage_revision_prompt,
     portfolio_plan_prompt,
 )
+from automation_miner.consolidation import consolidate, consolidated_pool, raw_pool
 from automation_miner.schemas import (
+    PainConsolidation,
     LAYER_ORDER,
     CandidatePortfolio,
     ContextPacket,
@@ -85,6 +87,21 @@ class PlanningStages(StageBase):
             )
         return plan, gap
 
+    def _ledger(
+        self, state: MinerState, analyses: list[LayerAnalysis]
+    ) -> tuple[list[RankedPain], list[str]]:
+        """Consolidate and size the analysts' pains once (reused on resume), then rank."""
+        layout, pool = layout_of(state), raw_pool(analyses)
+        consolidation = self._reuse(state, layout.pain_consolidation, PainConsolidation)
+        notes: list[str] = []
+        if consolidation is None:
+            ctx = ContextPacket.model_validate(state["context"])
+            result, notes = consolidate(self.model, pool, ctx.overview)
+            consolidation = result or PainConsolidation()
+            write_json(layout.pain_consolidation, consolidation)
+        merged, merge_notes = consolidated_pool(consolidation, pool)
+        return rank_pains(merged), notes + merge_notes
+
     def plan_portfolio(self, state: MinerState) -> Update:
         """Rank pains in code, plan against them, and revise once for coverage."""
         self._mark_stage("plan_portfolio")
@@ -93,13 +110,16 @@ class PlanningStages(StageBase):
             (LayerAnalysis.model_validate(a) for a in state["layer_analyses"]),
             key=lambda a: LAYER_ORDER.index(a.layer),
         )
-        ledger = build_pain_ledger(analyses)
+        ledger, notes = self._ledger(state, analyses)
         layout = layout_of(state)
         cached = self._reuse(state, layout.candidate_portfolio, CandidatePortfolio)
         if cached is not None:
             return self._planned(state, cached, ledger, started)
         plan, gap = self._plan(state, analyses, ledger)
-        coverage = {**coverage_report(ledger, plan), "revised_for": [pain.id for pain in gap]}
+        coverage = {
+            **coverage_report(ledger, plan), "revised_for": [pain.id for pain in gap],
+            "notes": notes,
+        }
         write_json(layout.candidate_portfolio, plan)
         write_json(layout.pain_ledger, {"pains": ledger_records(ledger), "coverage": coverage})
         return self._planned(state, plan, ledger, started)

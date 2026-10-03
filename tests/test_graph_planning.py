@@ -88,7 +88,7 @@ def test_layer_analysts_receive_layer_specific_evidence(
     original = MinerModel.call_json
 
     def capture(self, role, system, prompt, schema):  # type: ignore[no-untyped-def]
-        if role == "layer_analyst":
+        if role == "layer_analyst" and schema.__name__ == "LayerAnalysis":
             layer = prompt.split("\n", 1)[0].removeprefix("Layer: ").strip()
             prompts[layer] = prompt
         return original(self, role, system, prompt, schema)

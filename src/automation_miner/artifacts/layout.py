@@ -107,6 +107,10 @@ class RunLayout:
         return self.trace / "pain_ledger.json"
 
     @property
+    def pain_consolidation(self) -> Path:
+        return self.trace / "pain_consolidation.json"
+
+    @property
     def layers(self) -> Path:
         return self.trace / "layers"
 
